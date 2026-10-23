@@ -1,0 +1,214 @@
+# macscrap junk rules.
+#
+# Each rule expands `paths` (shell globs, `~` = home) into items. Rules are
+# applied in order and a path claimed by an earlier rule is never counted
+# twice, so put specific rules above broad ones.
+#
+#   action   = "delete" (frees space now) | "trash" (recoverable)
+#   safety   = "safe" (selected by default) | "review" (shown, unselected)
+#   min_age_days  only include items untouched for at least this long
+#
+# Users can override/add rules in
+#   ~/Library/Application Support/macscrap/rules.toml
+
+[[rule]]
+id = "trash"
+name = "Trash"
+category = "Trash"
+description = "Files you already deleted. Emptying the Trash frees their space."
+icon = "trash"
+paths = ["~/.Trash/*"]
+action = "delete"
+safety = "safe"
+
+[[rule]]
+id = "xcode-derived-data"
+name = "Xcode DerivedData"
+category = "Developer"
+description = "Xcode build products. Rebuilt automatically the next time you build."
+icon = "hammer"
+paths = ["~/Library/Developer/Xcode/DerivedData/*"]
+action = "delete"
+safety = "safe"
+
+[[rule]]
+id = "simulator-caches"
+name = "Simulator Caches"
+category = "Developer"
+description = "Caches for iOS simulators. Recreated when simulators launch."
+icon = "hammer"
+paths = ["~/Library/Developer/CoreSimulator/Caches/*"]
+action = "delete"
+safety = "safe"
+
+[[rule]]
+id = "xcode-device-support"
+name = "iOS Device Support"
+category = "Developer"
+description = "Debug symbols for iPhones you once connected. Re-downloaded if needed."
+icon = "phone"
+paths = [
+  "~/Library/Developer/Xcode/iOS DeviceSupport/*",
+  "~/Library/Developer/Xcode/watchOS DeviceSupport/*",
+]
+action = "delete"
+safety = "review"
+min_age_days = 60
+
+[[rule]]
+id = "xcode-archives"
+name = "Xcode Archives"
+category = "Developer"
+description = "Old app archives from Xcode. Keep any you still need to re-submit."
+icon = "archive"
+paths = ["~/Library/Developer/Xcode/Archives/*"]
+action = "trash"
+safety = "review"
+min_age_days = 90
+
+[[rule]]
+id = "package-manager-caches"
+name = "Package Manager Caches"
+category = "Developer"
+description = "Downloaded packages from npm, Cargo, pip, uv and others. Fetched again on demand."
+icon = "box"
+paths = [
+  "~/.npm/_cacache",
+  "~/.bun/install/cache",
+  "~/.cache/uv",
+  "~/.cache/pip",
+  "~/.gradle/caches",
+  "~/.cargo/registry/cache",
+  "~/Library/pnpm/store",
+]
+action = "delete"
+safety = "safe"
+
+[[rule]]
+id = "electron-caches"
+name = "App Web Caches"
+category = "System Junk"
+description = "Web caches inside desktop apps like Slack, VS Code and Discord."
+icon = "globe"
+paths = [
+  "~/Library/Application Support/*/Cache",
+  "~/Library/Application Support/*/Code Cache",
+  "~/Library/Application Support/*/GPUCache",
+  "~/Library/Application Support/*/Service Worker/CacheStorage",
+  "~/Library/Application Support/*/*/Cache",
+  "~/Library/Application Support/*/*/Code Cache",
+  "~/Library/Application Support/*/*/GPUCache",
+]
+action = "delete"
+safety = "safe"
+
+[[rule]]
+id = "user-caches"
+name = "User Cache Files"
+category = "System Junk"
+description = "Temporary data apps store to load faster. Apps rebuild it as needed."
+icon = "layers"
+paths = ["~/Library/Caches/*"]
+exclude = [
+  "~/Library/Caches/com.apple.bird",
+  "~/Library/Caches/CloudKit",
+  "~/Library/Caches/com.apple.HomeKit",
+  "~/Library/Caches/FamilyCircle",
+  "~/Library/Caches/com.apple.ap.adprivacyd",
+  "~/Library/Caches/com.apple.containermanagerd",
+]
+action = "delete"
+safety = "safe"
+
+[[rule]]
+id = "user-logs"
+name = "User Log Files"
+category = "System Junk"
+description = "Diagnostic logs written by apps. Only useful when troubleshooting."
+icon = "file-text"
+paths = ["~/Library/Logs/*"]
+action = "delete"
+safety = "safe"
+
+[[rule]]
+id = "saved-app-state"
+name = "Saved Application State"
+category = "System Junk"
+description = "Window positions apps restore on relaunch. Safe to reset."
+icon = "app-window"
+paths = ["~/Library/Saved Application State/*"]
+action = "delete"
+safety = "safe"
+min_age_days = 7
+
+[[rule]]
+id = "container-caches"
+name = "Sandboxed App Caches"
+category = "System Junk"
+description = "Caches of App Store apps. Needs Full Disk Access to read."
+icon = "layers"
+# Reading other apps' containers can trigger macOS privacy prompts unless
+# macscrap has Full Disk Access, so this is opt-in.
+paths = ["~/Library/Containers/*/Data/Library/Caches/*"]
+action = "delete"
+safety = "review"
+
+[[rule]]
+id = "installers"
+name = "Old Installers"
+category = "Downloads"
+description = "Disk images and installers in Downloads that you've likely already used."
+icon = "disc"
+paths = ["~/Downloads/*.dmg", "~/Downloads/*.pkg", "~/Downloads/*.iso", "~/Downloads/*.xip"]
+action = "trash"
+safety = "review"
+min_age_days = 7
+
+[[rule]]
+id = "mail-downloads"
+name = "Mail Downloads"
+category = "Mail"
+description = "Copies of attachments you opened from Mail."
+icon = "mail"
+paths = ["~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads/*"]
+action = "trash"
+safety = "review"
+
+[[rule]]
+id = "ios-backups"
+name = "iOS Device Backups"
+category = "Large Data"
+description = "Full backups of iPhones and iPads. Remove only if they're backed up elsewhere."
+icon = "phone"
+paths = ["~/Library/Application Support/MobileSync/Backup/*"]
+action = "trash"
+safety = "review"
+
+[[rule]]
+id = "local-ai-models"
+name = "Local AI Models"
+category = "AI Clutter"
+description = "Large language models downloaded by Ollama, LM Studio or Hugging Face."
+icon = "brain"
+paths = [
+  "~/.ollama/models",
+  "~/.cache/huggingface",
+  "~/.cache/lm-studio/models",
+  "~/.lmstudio/models",
+]
+action = "trash"
+safety = "review"
+
+[[rule]]
+id = "ai-tool-logs"
+name = "AI Tool Logs & Caches"
+category = "AI Clutter"
+description = "Logs written by AI coding tools like Claude, Cursor and Codex."
+icon = "brain"
+paths = [
+  "~/Library/Application Support/Claude/logs",
+  "~/Library/Application Support/Cursor/logs",
+  "~/.codex/log",
+]
+action = "delete"
+safety = "safe"

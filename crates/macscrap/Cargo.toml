@@ -1,0 +1,8 @@
+[package]
+name = "macscrap"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+macscrap-core = { path = "../macscrap-core" }
+gpui = { version = "0.2.2", default-features = false, features = ["font-kit", "runtime_shaders"] }
