@@ -212,7 +212,7 @@ impl MacScrap {
                         .rounded(px(6.))
                         .text_size(px(BODY))
                         .text_color(c(if is_last { pl.text } else { pl.text2 }))
-                        .when(is_last, |d| d.font_weight(FontWeight::SEMIBOLD))
+                        .when(is_last, |d| d.font_family("Geist").font_weight(FontWeight::SEMIBOLD))
                         .when(!is_last, |d| d.cursor_pointer().hover(|s| s.bg(c(pl.hover)).text_color(c(pl.text))))
                         .child(name)
                         .on_click(cx.listener(move |this, _, _, cx| this.lens_up_to(depth, cx))),
@@ -266,7 +266,7 @@ impl MacScrap {
                         .rounded(px(10.))
                         .bg(tint(pl.orange))
                         .child(icon("lock", pl.orange, 15.))
-                        .child(text(CAPTION, pl.text).flex_1().child("Some folders are hidden by macOS privacy protection. Give macscrap Full Disk Access to see everything."))
+                        .child(text(CAPTION, pl.text).flex_1().child("Some folders are hidden by macOS privacy protection. Give prunemymac Full Disk Access to see everything."))
                         .child(button("fda", Kind::Secondary, None, "Open Settings").on_click(|_, _, _| {
                             macscrap_core::sys::spawn_detached(std::process::Command::new("/usr/bin/open").arg(FDA_URL));
                         })),

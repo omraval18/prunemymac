@@ -31,12 +31,18 @@ fn main() {
     macscrap_core::sys::init_thread_pool();
     theme::load_motion_preference();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
+        cx.text_system()
+            .add_fonts(vec![
+                Cow::Borrowed(include_bytes!("../assets/fonts/Geist.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/Inter.ttf").as_slice()),
+            ])
+            .expect("load bundled fonts");
         let bounds = Bounds::centered(None, size(px(1120.), px(760.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("macscrap".into()),
+                    title: Some("prunemymac".into()),
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(18.), px(18.))),
                 }),

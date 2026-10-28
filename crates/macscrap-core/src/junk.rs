@@ -51,7 +51,7 @@ struct RuleFile {
 }
 
 pub fn user_rules_path() -> PathBuf {
-    fsutil::home().join("Library/Application Support/macscrap/rules.toml")
+    fsutil::home().join("Library/Application Support/prunemymac/rules.toml")
 }
 
 /// Built-in rules, with user rules appended. A user rule whose `id` matches a

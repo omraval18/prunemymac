@@ -143,24 +143,47 @@ pub struct ProcessInfo {
     pub name: String,
     pub cpu: f32,
     pub memory: u64,
+    pub app_bundle: Option<PathBuf>,
+    pub executable: Option<PathBuf>,
+    pub started: u64,
+    pub can_quit: bool,
+}
+
+/// The outermost application bundle owns nested helper apps too.
+pub fn app_bundle(executable: &Path) -> Option<PathBuf> {
+    executable.ancestors().filter(|path| path.extension().is_some_and(|ext| ext == "app")).last().map(Path::to_path_buf)
 }
 
 /// Heaviest processes by CPU, then memory. Takes ~250ms because CPU usage
 /// needs two samples.
 pub fn heavy_processes(limit: usize) -> Vec<ProcessInfo> {
     let mut sys = System::new();
-    let kind = ProcessRefreshKind::nothing().with_cpu().with_memory().with_exe(UpdateKind::OnlyIfNotSet);
+    let kind = ProcessRefreshKind::nothing().with_cpu().with_memory().with_exe(UpdateKind::OnlyIfNotSet).with_user(UpdateKind::Always);
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.max(std::time::Duration::from_millis(250)));
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+    let mut signatures = std::collections::HashMap::<PathBuf, bool>::new();
+    let uid = unsafe { libc::getuid() };
     let mut procs: Vec<ProcessInfo> = sys
         .processes()
         .values()
-        .map(|p| ProcessInfo {
-            pid: p.pid().as_u32(),
-            name: p.name().to_string_lossy().into_owned(),
-            cpu: p.cpu_usage(),
-            memory: p.memory(),
+        .map(|p| {
+            let executable = p.exe().map(Path::to_path_buf);
+            let same_user = uid != 0 && p.user_id().is_some_and(|id| **id == uid)
+                && p.effective_user_id().is_some_and(|id| **id == uid);
+            let can_quit = p.pid().as_u32() != std::process::id() && p.start_time() != 0 && same_user
+                && executable.as_ref().is_some_and(|exe| *signatures.entry(exe.clone())
+                    .or_insert_with(|| crate::network::cached_verified_third_party_app(exe)));
+            ProcessInfo {
+                pid: p.pid().as_u32(),
+                name: p.name().to_string_lossy().into_owned(),
+                cpu: p.cpu_usage(),
+                memory: p.memory(),
+                app_bundle: p.exe().and_then(app_bundle),
+                executable,
+                started: p.start_time(),
+                can_quit,
+            }
         })
         .collect();
     procs.sort_by(|a, b| b.cpu.total_cmp(&a.cpu).then(b.memory.cmp(&a.memory)));
@@ -168,11 +191,18 @@ pub fn heavy_processes(limit: usize) -> Vec<ProcessInfo> {
     procs
 }
 
-pub fn quit_process(pid: u32) -> Result<(), String> {
-    let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error().to_string())
+pub fn quit_process(process: &ProcessInfo) -> Result<(), String> {
+    crate::network::stop_verified_app(process.pid, process.started, process.executable.as_deref())
+}
+
+#[cfg(test)]
+mod process_group_tests {
+    use super::*;
+
+    #[test]
+    fn groups_nested_helpers_under_the_outer_app() {
+        let exe = Path::new("/Applications/Browser.app/Contents/Helpers/Browser Helper.app/Contents/MacOS/Helper");
+        assert_eq!(app_bundle(exe), Some(PathBuf::from("/Applications/Browser.app")));
+        assert_eq!(app_bundle(Path::new("/usr/bin/python3")), None);
     }
 }

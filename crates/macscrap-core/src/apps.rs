@@ -49,7 +49,7 @@ fn read_info(app: &Path) -> Option<BundleInfo> {
 }
 
 fn icon_cache_dir() -> PathBuf {
-    fsutil::home().join("Library/Caches/macscrap/icons")
+    fsutil::home().join("Library/Caches/prunemymac/icons")
 }
 
 /// Render the app's .icns to a 128px PNG via the built-in `sips`, cached by

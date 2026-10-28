@@ -3402,14 +3402,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
-name = "macscrap"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "macscrap-core",
-]
-
-[[package]]
 name = "macscrap-core"
 version = "0.1.0"
 dependencies = [
@@ -4389,6 +4381,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "prunemymac"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "macscrap-core",
 ]
 
 [[package]]

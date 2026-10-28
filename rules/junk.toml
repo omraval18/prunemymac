@@ -1,4 +1,4 @@
-# macscrap junk rules.
+# prunemymac junk rules.
 #
 # Each rule expands `paths` (shell globs, `~` = home) into items. Rules are
 # applied in order and a path claimed by an earlier rule is never counted
@@ -9,7 +9,7 @@
 #   min_age_days  only include items untouched for at least this long
 #
 # Users can override/add rules in
-#   ~/Library/Application Support/macscrap/rules.toml
+#   ~/Library/Application Support/prunemymac/rules.toml
 
 [[rule]]
 id = "trash"
@@ -148,7 +148,7 @@ category = "System Junk"
 description = "Caches of App Store apps. Needs Full Disk Access to read."
 icon = "layers"
 # Reading other apps' containers can trigger macOS privacy prompts unless
-# macscrap has Full Disk Access, so this is opt-in.
+# prunemymac has Full Disk Access, so this is opt-in.
 paths = ["~/Library/Containers/*/Data/Library/Caches/*"]
 action = "delete"
 safety = "review"

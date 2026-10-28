@@ -185,7 +185,7 @@ impl MacScrap {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(text(17., pl.text).font_weight(FontWeight::SEMIBOLD).child(app.name.clone()))
+                    .child(text(17., pl.text).font_family("Geist").font_weight(FontWeight::SEMIBOLD).child(app.name.clone()))
                     .child(text(CAPTION, pl.text3).truncate().child(if app.version.is_empty() {
                         app.bundle_id.clone()
                     } else {

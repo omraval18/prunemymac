@@ -135,7 +135,7 @@ pub fn text(size: f32, color: u32) -> Div {
 }
 
 pub fn strong(size: f32, color: u32) -> Div {
-    text(size, color).font_weight(FontWeight::SEMIBOLD)
+    text(size, color).font_family("Geist").font_weight(FontWeight::SEMIBOLD)
 }
 
 // ───────────────────────────── Motion ─────────────────────────────
@@ -320,7 +320,7 @@ pub fn meter(frac: f32, color: u32) -> Div {
 }
 
 pub fn section_label(label: &str) -> Div {
-    text(MICRO, p().text3).font_weight(FontWeight::SEMIBOLD).child(label.to_uppercase())
+    text(MICRO, p().text3).font_family("Geist").font_weight(FontWeight::SEMIBOLD).child(label.to_uppercase())
 }
 
 pub fn page_header(title: &str, subtitle: &str) -> Div {
@@ -329,7 +329,7 @@ pub fn page_header(title: &str, subtitle: &str) -> Div {
         .flex_col()
         .gap(px(3.))
         .min_w_0()
-        .child(text(TITLE, p().text).font_weight(FontWeight::BOLD).child(title.to_string()))
+        .child(text(TITLE, p().text).font_family("Geist").font_weight(FontWeight::BOLD).child(title.to_string()))
         .child(text(BODY, p().text2).child(subtitle.to_string()))
 }
 

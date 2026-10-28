@@ -9,6 +9,7 @@ pub mod health;
 pub mod junk;
 mod listing;
 pub mod malware;
+pub mod network;
 pub mod space;
 pub mod sys;
 

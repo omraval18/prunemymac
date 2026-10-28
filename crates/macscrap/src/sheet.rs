@@ -36,6 +36,7 @@ fn backdrop(content: impl IntoElement, dismiss: bool, cx: &mut Context<MacScrap>
             cx.listener(move |this, _, _, cx| {
                 if dismiss {
                     this.confirm = None;
+                    this.port_confirm = None;
                     if this.cleaning.as_ref().is_some_and(|c| c.completed_at.is_some()) {
                         this.cleaning = None;
                     }
@@ -64,6 +65,9 @@ fn panel(width: f32) -> gpui::Stateful<gpui::Div> {
 
 impl MacScrap {
     pub fn sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.port_confirm.is_some() {
+            return Some(self.port_confirm_view(cx));
+        }
         if self.confirm.is_some() {
             return Some(self.confirm_view(cx));
         }
@@ -71,6 +75,24 @@ impl MacScrap {
             return Some(self.cleaning_view(window, cx));
         }
         None
+    }
+
+    fn port_confirm_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let pl = p();
+        let target = self.port_confirm.as_ref().unwrap();
+        backdrop(
+            panel(420.).gap(px(16.))
+                .child(tile_icon("alert", pl.orange, 40.))
+                .child(strong(HEADLINE, pl.text).child(format!("Stop {}?", target.process)))
+                .child(text(BODY, pl.text2).child(format!("PID {} · {} port {}", target.pid, target.protocol, target.number)))
+                .child(text(BODY, pl.text2).child("This asks the entire process to quit, not just the port. Unsaved work may be lost and services may stop. The port can be reopened automatically."))
+                .child(div().flex().justify_end().gap(px(8.))
+                    .child(button("port-cancel", Kind::Secondary, None, "Cancel").on_click(cx.listener(|this, _, _, cx| {
+                        this.port_confirm = None;
+                        cx.notify();
+                    })))
+                    .child(button("port-confirm", Kind::Primary, None, "Stop Process").on_click(cx.listener(|this, _, _, cx| this.stop_port_process(cx))))),
+        true, cx).into_any_element()
     }
 
     fn confirm_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -199,7 +221,7 @@ impl MacScrap {
                 .flex()
                 .flex_col()
                 .items_center()
-                .child(text(26., pl.text).font_weight(FontWeight::SEMIBOLD).child(format!("{:.0}%", shown * 100.)))
+                .child(text(26., pl.text).font_family("Geist").font_weight(FontWeight::SEMIBOLD).child(format!("{:.0}%", shown * 100.)))
                 .into_any_element()
         };
 
@@ -229,7 +251,7 @@ impl MacScrap {
                     .flex_col()
                     .items_center()
                     .gap(px(4.))
-                    .child(text(20., pl.text).font_weight(FontWeight::SEMIBOLD).child(title))
+                    .child(text(20., pl.text).font_family("Geist").font_weight(FontWeight::SEMIBOLD).child(title))
                     .child(text(BODY, pl.text2).child(subtitle))
                     .child(
                         text(CAPTION, pl.text3)

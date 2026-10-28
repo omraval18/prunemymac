@@ -145,7 +145,7 @@ impl MacScrap {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(text(17., pl.text).font_weight(FontWeight::SEMIBOLD).child(title))
+                    .child(text(17., pl.text).font_family("Geist").font_weight(FontWeight::SEMIBOLD).child(title))
                     .child(text(BODY, pl.text2).child(subtitle)),
             )
             .child(actions)
@@ -233,7 +233,7 @@ impl MacScrap {
                             .flex()
                             .flex_col()
                             .gap(px(2.))
-                            .child(text(18., pl.text).font_weight(FontWeight::SEMIBOLD).child(v))
+                            .child(text(18., pl.text).font_family("Geist").font_weight(FontWeight::SEMIBOLD).child(v))
                             .child(text(CAPTION, pl.text3).child(caption)),
                         format!("tile-{label}-{gen}"),
                         ix,
@@ -242,7 +242,7 @@ impl MacScrap {
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .child(text(18., pl.text3).font_weight(FontWeight::SEMIBOLD).child("—"))
+                        .child(text(18., pl.text3).font_family("Geist").font_weight(FontWeight::SEMIBOLD).child("—"))
                         .child(text(CAPTION, pl.text3).child(if running { "Checking…" } else { "Not scanned" }))
                         .into_any_element(),
                 });
@@ -298,7 +298,7 @@ fn big_number(value: String, unit: &str) -> Div {
         .flex()
         .items_baseline()
         .gap(px(5.))
-        .child(text(26., pl.text).font_weight(FontWeight::SEMIBOLD).child(value))
+        .child(text(26., pl.text).font_family("Geist").font_weight(FontWeight::SEMIBOLD).child(value))
         .child(text(BODY, pl.text2).child(unit.to_string()))
 }
 

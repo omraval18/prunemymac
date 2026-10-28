@@ -78,11 +78,26 @@ impl MacScrap {
             return scanning_view("Measuring activity", "Sampling CPU and memory".into(), None).into_any_element();
         };
         let gen = *gen;
-        let rows: Vec<AnyElement> = procs
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(ix, proc_)| {
+        let mut by_app = std::collections::BTreeMap::<Option<std::path::PathBuf>, Vec<_>>::new();
+        for proc_ in procs.iter().cloned() {
+            by_app.entry(proc_.app_bundle.clone()).or_default().push(proc_);
+        }
+        let mut groups: Vec<_> = by_app.into_iter().collect();
+        groups.sort_by(|(_, a), (_, b)| {
+            let a_cpu: f32 = a.iter().map(|p| p.cpu).sum();
+            let b_cpu: f32 = b.iter().map(|p| p.cpu).sum();
+            b_cpu.total_cmp(&a_cpu)
+        });
+        let sections: Vec<AnyElement> = groups.into_iter().enumerate().map(|(group_ix, (bundle, procs))| {
+            let name = bundle.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Other processes".into());
+            let cpu: f32 = procs.iter().map(|p| p.cpu).sum();
+            let memory: u64 = procs.iter().map(|p| p.memory).sum();
+            let count = procs.len();
+            let key = bundle.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "other-processes".into());
+            let expanded = self.process_groups_expanded.contains(&key);
+            let toggle_key = key.clone();
+            let rows: Vec<AnyElement> = if expanded { procs.into_iter().enumerate().map(|(ix, proc_)| {
                 let busy = proc_.cpu >= 50.0;
                 let frac = (proc_.cpu / 100.0).min(1.0);
                 let name = proc_.name.clone();
@@ -100,22 +115,51 @@ impl MacScrap {
                         )
                         .child(div().w(px(90.)).flex_none().child(meter(frac, if busy { pl.orange } else { pl.accent })))
                         .child(text(BODY, if busy { pl.orange } else { pl.text }).font_weight(FontWeight::MEDIUM).w(px(56.)).text_right().child(format!("{:.0}%", proc_.cpu)))
-                        .child(button(SharedString::from(format!("q-{}", proc_.pid)), Kind::Ghost, None, "Quit").on_click(cx.listener(move |this, _, _, cx| {
-                            match macscrap_core::background::quit_process(proc_.pid) {
-                                Ok(()) => this.show_toast(format!("Asked {name} to quit"), true),
-                                Err(e) => this.show_toast(format!("Couldn't quit {name}: {e}"), false),
-                            }
-                            this.load_performance(cx);
-                        }))),
-                    format!("pr-{gen}-{ix}"),
+                        .child(if proc_.can_quit {
+                            button(SharedString::from(format!("q-{}", proc_.pid)), Kind::Ghost, None, "Quit").on_click(cx.listener(move |_, _, _, cx| {
+                                let process = proc_.clone();
+                                let name = name.clone();
+                                let task = cx.background_executor().spawn(async move { macscrap_core::background::quit_process(&process) });
+                                cx.spawn(async move |this, cx| {
+                                    let result = task.await;
+                                    this.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(()) => this.show_toast(format!("Asked {name} to quit"), true),
+                                            Err(e) => this.show_toast(format!("Couldn't quit {name}: {e}"), false),
+                                        }
+                                        this.load_performance(cx);
+                                        cx.notify();
+                                    }).ok();
+                                }).detach();
+                            })).into_any_element()
+                        } else {
+                            pill("Protected", pl.text3).into_any_element()
+                        }),
+                    format!("pr-{gen}-{group_ix}-{ix}"),
                     ix,
                 )
             })
-            .collect();
+            .collect() } else { Vec::new() };
+            div().flex().flex_col().gap(px(6.))
+                .child(div().id(SharedString::from(format!("process-group-{key}"))).flex().items_center().gap(px(8.))
+                    .px(px(8.)).py(px(8.)).rounded(px(8.)).cursor_pointer().hover(|s| s.bg(c(pl.hover)))
+                    .child(icon(if expanded { "chevron-down" } else { "chevron-right" }, pl.text3, 14.))
+                    .child(div().flex_1().min_w_0()
+                    .child(strong(BODY, pl.text).child(name))
+                    )
+                    .child(text(CAPTION, pl.text3).child(format!("{count} processes · {cpu:.0}% CPU · {} memory", human_bytes(memory))))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.process_groups_expanded.remove(&toggle_key) {
+                            this.process_groups_expanded.insert(toggle_key.clone());
+                        }
+                        cx.notify();
+                    })))
+                .children(expanded.then(|| grouped(rows))).into_any_element()
+        }).collect();
         scroll_body("procs")
-            .gap(px(10.))
-            .child(note("info", "Sorted by CPU use over the last moment. Quitting an app can lose unsaved work."))
-            .child(grouped(rows))
+            .gap(px(14.))
+            .child(note("info", "Expand an app to see its processes. Only verified third-party app processes can be quit; quitting can lose unsaved work."))
+            .children(sections)
             .into_any_element()
     }
 

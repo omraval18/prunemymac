@@ -4,7 +4,7 @@
 use crate::theme::*;
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClipboardItem, Context, FocusHandle, FontWeight, KeyDownEvent, MouseButton, SharedString, Task,
+    div, img, px, ClipboardItem, Context, FocusHandle, FontWeight, KeyDownEvent, MouseButton, SharedString, Task,
     Window, WindowAppearance,
 };
 use macscrap_core::apps::{AppInfo, Leftover};
@@ -14,6 +14,7 @@ use macscrap_core::files::{DuplicateSet, FileEntry};
 use macscrap_core::health::{Level, Monitor, Snapshot};
 use macscrap_core::junk::{JunkGroup, Safety};
 use macscrap_core::malware::{Severity, Threat};
+use macscrap_core::network::{Connection, Port};
 use macscrap_core::{human_bytes, Cancel};
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -31,6 +32,7 @@ pub enum Page {
     Duplicates,
     Uninstaller,
     Performance,
+    Network,
     Protection,
 }
 
@@ -44,6 +46,7 @@ impl Page {
             Page::Duplicates => "Duplicates",
             Page::Uninstaller => "Uninstaller",
             Page::Performance => "Performance",
+            Page::Network => "Network",
             Page::Protection => "Protection",
         }
     }
@@ -56,6 +59,7 @@ impl Page {
             Page::Duplicates => "copy",
             Page::Uninstaller => "grid",
             Page::Performance => "activity",
+            Page::Network => "wifi",
             Page::Protection => "shield",
         }
     }
@@ -65,7 +69,7 @@ const NAV: [(&str, &[Page]); 4] = [
     ("", &[Page::Overview]),
     ("Clean", &[Page::Cleanup, Page::SpaceLens, Page::LargeFiles, Page::Duplicates]),
     ("Apps", &[Page::Uninstaller, Page::Performance]),
-    ("Security", &[Page::Protection]),
+    ("Security", &[Page::Protection, Page::Network]),
 ];
 
 static GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -231,8 +235,20 @@ pub struct MacScrap {
 
     pub perf_tab: usize,
     pub processes: Job<Vec<ProcessInfo>>,
+    pub process_groups_expanded: HashSet<String>,
     pub launch: Job<Vec<LaunchItem>>,
     pub maintenance_running: Option<&'static str>,
+
+    pub network: Option<Result<Vec<Connection>, String>>,
+    pub network_running: bool,
+    pub network_review_only: bool,
+    network_last_refresh: Option<Instant>,
+    pub network_tab: usize,
+    pub network_ports: Option<Result<Vec<Port>, String>>,
+    pub network_ports_running: bool,
+    network_ports_last_refresh: Option<Instant>,
+    pub port_confirm: Option<Port>,
+    pub port_stop_pending: bool,
 
     pub protection: Job<Threats>,
     pub last_protection_scan: Option<Instant>,
@@ -296,8 +312,19 @@ impl MacScrap {
             leftovers_selected: HashSet::new(),
             perf_tab: 0,
             processes: Job::Idle,
+            process_groups_expanded: HashSet::new(),
             launch: Job::Idle,
             maintenance_running: None,
+            network: None,
+            network_running: false,
+            network_review_only: false,
+            network_last_refresh: None,
+            network_tab: 0,
+            network_ports: None,
+            network_ports_running: false,
+            network_ports_last_refresh: None,
+            port_confirm: None,
+            port_stop_pending: false,
             protection: Job::Idle,
             last_protection_scan: None,
             confirm: None,
@@ -317,7 +344,7 @@ impl MacScrap {
             if since.elapsed() > Duration::from_secs(30) && quiet {
                 self.last_hot_notice = Some(Instant::now());
                 notify(&format!(
-                    "Your Mac is running hot ({:.0}°C). Open macscrap → Performance to see what's using the CPU.",
+                    "Your Mac is running hot ({:.0}°C). Open prunemymac → Performance to see what's using the CPU.",
                     snap.cpu_temp.unwrap_or_default()
                 ));
             }
@@ -329,6 +356,14 @@ impl MacScrap {
         }
         self.cpu_history.push_back(snap.cpu_load);
         self.health = Some(snap);
+        if self.page == Page::Network && self.network_tab == 0 && !self.network_running
+            && self.network_last_refresh.is_none_or(|last| last.elapsed() >= Duration::from_secs(5)) {
+            self.refresh_network(cx);
+        }
+        if self.page == Page::Network && self.network_tab == 1 && !self.network_ports_running && !self.port_stop_pending
+            && self.network_ports_last_refresh.is_none_or(|last| last.elapsed() >= Duration::from_secs(5)) {
+            self.refresh_ports(cx);
+        }
         if self.toast.as_ref().is_some_and(|t| t.at.elapsed() > Duration::from_secs(4)) {
             self.toast = None;
         }
@@ -386,6 +421,59 @@ impl MacScrap {
     }
 
     // ───────────────────────────── Jobs ─────────────────────────────
+
+    pub fn refresh_network(&mut self, cx: &mut Context<Self>) {
+        if self.network_running { return; }
+        self.network_running = true;
+        self.network_last_refresh = Some(Instant::now());
+        let task = cx.background_executor().spawn(async { macscrap_core::network::connections() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.network = Some(result);
+                this.network_running = false;
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
+    pub fn refresh_ports(&mut self, cx: &mut Context<Self>) {
+        if self.network_ports_running { return; }
+        self.network_ports_running = true;
+        self.network_ports_last_refresh = Some(Instant::now());
+        let task = cx.background_executor().spawn(async { macscrap_core::network::ports() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.network_ports = Some(result);
+                this.network_ports_running = false;
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
+    pub fn stop_port_process(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.port_confirm.take() else { return };
+        if self.port_stop_pending { return; }
+        self.port_stop_pending = true;
+        let name = target.process.clone();
+        let task = cx.background_executor().spawn(async move { macscrap_core::network::stop_port_process(&target) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.port_stop_pending = false;
+                match result {
+                    Ok(()) => this.show_toast(format!("Asked {name} to stop"), true),
+                    Err(error) => this.show_toast(error, false),
+                }
+                this.refresh_ports(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
 
     pub fn start_junk_scan(&mut self, cx: &mut Context<Self>) {
         let phase = self.junk_phase.clone();
@@ -484,7 +572,7 @@ impl MacScrap {
     }
 
     pub fn load_performance(&mut self, cx: &mut Context<Self>) {
-        self.spawn_job(cx, |s| &mut s.processes, |_, _| macscrap_core::background::heavy_processes(15), |_| {});
+        self.spawn_job(cx, |s| &mut s.processes, |_, _| macscrap_core::background::heavy_processes(usize::MAX), |_| {});
         self.spawn_job(cx, |s| &mut s.launch, |_, _| macscrap_core::background::launch_items(), |_| {});
     }
 
@@ -575,6 +663,10 @@ impl MacScrap {
                 }
                 window.focus(&self.focus);
             }
+            Page::Network => {
+                if self.network_tab == 0 { self.refresh_network(cx); } else { self.refresh_ports(cx); }
+                window.focus(&self.focus);
+            }
             _ => window.focus(&self.focus),
         }
         cx.notify();
@@ -612,6 +704,7 @@ impl MacScrap {
             Page::Uninstaller => self.apps.is_running(),
             Page::Overview => self.smart_scan_running(),
             Page::Performance => false,
+            Page::Network => self.network_running || self.network_ports_running || self.port_stop_pending,
         }
     }
 
@@ -675,17 +768,8 @@ impl MacScrap {
                     .flex()
                     .items_center()
                     .gap(px(9.))
-                    .child(
-                        div()
-                            .size(px(24.))
-                            .rounded(px(7.))
-                            .bg(c(pl.accent))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon("logo", 0xffffff, 14.)),
-                    )
-                    .child(strong(HEADLINE, pl.text).child("macscrap")),
+                    .child(img("images/chip-cleaner.png").size(px(25.)).rounded(px(7.)))
+                    .child(strong(HEADLINE, pl.text).child("prunemymac")),
             )
             .child(nav)
             .child(div().flex_1())
@@ -750,7 +834,9 @@ impl MacScrap {
 
     fn on_key(&mut self, e: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = e.keystroke.key.as_str();
-        if self.confirm.is_some() {
+        if self.port_confirm.is_some() {
+            if key == "escape" { self.port_confirm = None; } else { return; }
+        } else if self.confirm.is_some() {
             match key {
                 "escape" => self.confirm = None,
                 "enter" => self.run_confirmed(cx),
@@ -782,6 +868,7 @@ impl Render for MacScrap {
             Page::Duplicates => self.render_duplicates(cx).into_any_element(),
             Page::Uninstaller => self.render_uninstaller(window, cx).into_any_element(),
             Page::Performance => self.render_performance(cx).into_any_element(),
+            Page::Network => self.render_network(cx).into_any_element(),
             Page::Protection => self.render_protection(cx).into_any_element(),
         };
         div()
@@ -789,7 +876,7 @@ impl Render for MacScrap {
             .relative()
             .flex()
             .bg(c(pl.bg))
-            .font_family(".SystemUIFont")
+            .font_family("Inter")
             .text_size(px(BODY))
             .text_color(c(pl.text))
             .track_focus(&self.focus)
@@ -832,7 +919,7 @@ fn level_text(level: Level) -> u32 {
 }
 
 pub fn notify(message: &str) {
-    let script = format!("display notification \"{}\" with title \"macscrap\"", message.replace('"', "'"));
+    let script = format!("display notification \"{}\" with title \"prunemymac\"", message.replace('"', "'"));
     macscrap_core::sys::spawn_detached(Command::new("/usr/bin/osascript").args(["-e", &script]));
 }
 

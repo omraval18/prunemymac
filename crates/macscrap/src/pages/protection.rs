@@ -146,7 +146,7 @@ impl MacScrap {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(text(17., pl.text).font_weight(FontWeight::SEMIBOLD).child(title))
+                    .child(text(17., pl.text).font_family("Geist").font_weight(FontWeight::SEMIBOLD).child(title))
                     .child(text(BODY, pl.text2).child(subtitle))
                     .children(when.map(|w| text(CAPTION, pl.text3).child(w))),
             )

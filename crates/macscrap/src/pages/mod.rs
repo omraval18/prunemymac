@@ -3,6 +3,7 @@
 mod cleanup;
 mod files;
 mod overview;
+mod network;
 mod performance;
 mod protection;
 mod space_lens;
