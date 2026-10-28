@@ -272,7 +272,7 @@ impl MacScrap {
                     .px(px(4.))
                     .pb(px(8.))
                     .child(section_label(if cfg!(target_os = "linux") { "Application and related files" } else { "Will be removed" }))
-                    .child(text(MICRO, pl.text3).child(format!("{} related items", left.len()))),
+                    .child(text(MICRO, pl.text3).child(if cfg!(target_os = "linux") { format!("{} related items · app size shown separately", left.len()) } else { format!("{} related items", left.len()) })),
             )
             .child(div().id("leftovers").flex_1().min_h_0().overflow_y_scroll().child(grouped(rows)))
             .into_any_element();

@@ -129,6 +129,8 @@ pub fn list(cancel: &Cancel) -> Vec<AppInfo> {
     let (owners, packages) = package_metadata();
     let flatpaks = user_flatpaks();
     let mut seen = HashSet::new();
+    let mut seen_apps = HashSet::new();
+    let own_exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
     let mut apps = Vec::new();
     for root in desktop_roots() {
         let mut pending = vec![(root.clone(), 0usize)];
@@ -143,6 +145,11 @@ pub fn list(cancel: &Cancel) -> Vec<AppInfo> {
                 if !seen.insert(id.clone()) { continue; }
                 let Some(fields) = desktop_fields(&path) else { continue };
                 let Some(name) = fields.get("Name").filter(|n| !n.is_empty()) else { continue };
+                let app_exe = fields.get("Exec").and_then(|s| executable(s));
+                if app_exe.is_some() && app_exe == own_exe { continue; }
+                if let Some(exe) = &app_exe {
+                    if !seen_apps.insert((name.to_lowercase(), exe.clone())) { continue; }
+                }
                 let package = owners.get(&path).cloned();
                 let user_flatpak = fields.get("X-Flatpak").filter(|id| flatpaks.contains_key(*id)).cloned();
                 let (version, size) = package.as_ref().and_then(|p| packages.get(p)).cloned().unwrap_or_else(||
@@ -150,7 +157,7 @@ pub fn list(cancel: &Cancel) -> Vec<AppInfo> {
                 apps.push(AppInfo {
                     name: name.clone(), bundle_id: id, path,
                     icon: fields.get("Icon").and_then(|s| icon_path(s)),
-                    executable: fields.get("Exec").and_then(|s| executable(s)), package, user_flatpak, version, size,
+                    executable: app_exe, package, user_flatpak, version, size,
                 });
             }
         }

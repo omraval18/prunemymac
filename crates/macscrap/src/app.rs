@@ -131,6 +131,7 @@ pub struct Confirm {
 /// A clean in progress (or just finished), shown in the sheet.
 pub struct Cleaning {
     pub title: String,
+    pub has_trash: bool,
     pub total_items: usize,
     pub total_bytes: u64,
     pub progress: Arc<macscrap_core::clean::Progress>,
@@ -565,14 +566,7 @@ impl MacScrap {
             cx,
             |s| &mut s.dupes,
             |cancel, n| macscrap_core::files::duplicates(&macscrap_core::fsutil::home(), 1_000_000, &cancel, &n),
-            |s| {
-                // Keep the oldest copy of each set; select the rest.
-                s.dupes_selected = s
-                    .dupes
-                    .done()
-                    .map(|sets| sets.iter().flat_map(|set| set.files.iter().skip(1).map(|f| f.path.clone())).collect())
-                    .unwrap_or_default();
-            },
+            |s| s.dupes_selected.clear(),
         );
     }
 
@@ -650,6 +644,7 @@ impl MacScrap {
         let progress = Arc::new(macscrap_core::clean::Progress::default());
         self.cleaning = Some(Cleaning {
             title: confirm.verb.clone(),
+            has_trash: confirm.items.iter().any(|item| item.2 == Method::Trash),
             total_items: confirm.items.len(),
             total_bytes: confirm.items.iter().map(|i| i.1).sum(),
             progress: progress.clone(),
@@ -668,6 +663,15 @@ impl MacScrap {
             let report = task.await;
             this.update(cx, |this, cx| {
                 on_done(this, &report);
+                // Other pages may have cached entries for the same paths.
+                this.prune_removed_junk();
+                if let Some(files) = this.large.done_mut() { files.retain(|f| f.path.exists()); }
+                if let Some(sets) = this.dupes.done_mut() {
+                    for set in sets.iter_mut() { set.files.retain(|f| f.path.exists()); }
+                    sets.retain(|set| set.files.len() > 1);
+                }
+                if let Some(result) = this.protection.done_mut() { result.threats.retain(|t| t.path.exists()); }
+                if this.page != Page::SpaceLens && !this.lens.is_running() { this.lens = Job::Idle; }
                 if let Some(c) = this.cleaning.as_mut() {
                     c.report = Some(report);
                 }
@@ -721,9 +725,12 @@ impl MacScrap {
                 (n.to_string(), pl.text3)
             }),
             Page::Duplicates => self.dupes.done().map(|d| size(d.iter().map(|s| s.wasted()).sum())),
-            Page::Protection => self.protection.done().map(|t| match t.malicious() {
-                0 => ("✓".to_string(), pl.green),
-                n => (n.to_string(), pl.red),
+            Page::Protection => self.protection.done().map(|t| {
+                let suspicious = t.threats.iter().filter(|t| t.severity == Severity::Suspicious).count();
+                if t.malicious() > 0 { (t.malicious().to_string(), pl.red) }
+                else if suspicious > 0 { (suspicious.to_string(), pl.orange) }
+                else if t.error.is_some() { ("!".to_string(), pl.orange) }
+                else { ("✓".to_string(), pl.green) }
             }),
             _ => None,
         }

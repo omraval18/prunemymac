@@ -161,9 +161,11 @@ impl MacScrap {
                             .p(px(12.))
                             .rounded(px(10.))
                             .bg(c(pl.surface2))
-                            .when(trash > 0, |d| d.child(line("trash", format!("{trash} moved to the Trash. You can put them back until you empty it."))))
-                            .when(delete > 0, |d| d.child(line("refresh", format!("{delete} caches and logs deleted. Apps recreate them when needed.")))),
+                            .when(trash > 0, |d| d.child(line("trash", format!("{trash} {} will move to the Trash and can be restored until it is emptied.", if trash == 1 { "item" } else { "items" }))))
+                            .when(delete > 0, |d| d.child(line("alert", format!("{delete} {} will be permanently deleted.", if delete == 1 { "item" } else { "items" })))),
                     )
+                    .child(div().id("confirm-paths").w_full().max_h(px(140.)).overflow_y_scroll().flex().flex_col().gap(px(4.))
+                        .children(confirm.items.iter().map(|item| text(CAPTION, pl.text2).child(item.0.display().to_string()))))
                     .child(
                         div()
                             .flex()
@@ -256,7 +258,7 @@ impl MacScrap {
 
         let (title, subtitle): (String, String) = if done {
             (
-                format!("{} freed", human_bytes(freed_total)),
+                format!("{} {}", human_bytes(freed_total), if c_.has_trash { "processed" } else { "freed" }),
                 format!("{removed} {} {}", if removed == 1 { "item" } else { "items" }, if verb == "Uninstall" { "removed" } else { "cleaned up" }),
             )
         } else {

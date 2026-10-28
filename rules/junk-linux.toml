@@ -32,6 +32,16 @@ safety = "review"
 min_age_days = 30
 
 [[rule]]
+id = "other-user-caches"
+name = "Other User Caches"
+category = "Apps"
+description = "Application cache folders. Review each folder; running apps may need its contents."
+icon = "archive"
+paths = ["~/.cache/*"]
+action = "trash"
+safety = "review"
+
+[[rule]]
 id = "developer-cache"
 name = "Developer Caches"
 category = "Developer"

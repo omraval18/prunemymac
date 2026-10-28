@@ -176,7 +176,7 @@ pub fn app_bundle(executable: &Path) -> Option<PathBuf> {
 /// needs two samples.
 pub fn heavy_processes(limit: usize) -> Vec<ProcessInfo> {
     let mut sys = System::new();
-    let kind = ProcessRefreshKind::nothing().with_cpu().with_memory().with_exe(UpdateKind::OnlyIfNotSet).with_user(UpdateKind::Always);
+    let kind = ProcessRefreshKind::nothing().without_tasks().with_cpu().with_memory().with_exe(UpdateKind::OnlyIfNotSet).with_user(UpdateKind::Always);
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.max(std::time::Duration::from_millis(250)));
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);

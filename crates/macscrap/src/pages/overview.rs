@@ -158,7 +158,13 @@ impl MacScrap {
 
     fn result_tiles(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let pl = p();
-        let heavy = self.processes.done().map(|p| p.iter().filter(|p| p.cpu >= 30.0).count());
+        let heavy = self.processes.done().map(|processes| {
+            let mut apps = std::collections::HashMap::new();
+            for process in processes {
+                if let Some(app) = &process.app_bundle { *apps.entry(app).or_insert(0.0f32) += process.cpu; }
+            }
+            apps.values().filter(|&&cpu| cpu >= 30.0).count()
+        });
         let startup = self.launch.done().map(|l| l.iter().filter(|i| !i.is_apple()).count());
         let large: Option<(usize, u64)> = self.large.done().map(|f| {
             let big: Vec<_> = f.iter().filter(|f| f.size >= 500_000_000).collect();
@@ -179,9 +185,12 @@ impl MacScrap {
                 "shield",
                 pl.green,
                 "Protection",
-                self.protection.done().map(|t| match t.malicious() {
-                    0 => ("No threats".into(), format!("{} files checked", fmt_count(t.scanned))),
-                    n => (format!("{n} threats"), "need review".into()),
+                self.protection.done().map(|t| {
+                    let suspicious = t.threats.iter().filter(|t| t.severity == macscrap_core::malware::Severity::Suspicious).count();
+                    if t.error.is_some() { ("Scan incomplete".into(), "Check Protection".into()) }
+                    else if t.malicious() > 0 { (format!("{} threats", t.malicious()), "need review".into()) }
+                    else if suspicious > 0 { (format!("{suspicious} findings"), "need review".into()) }
+                    else { ("No threats".into(), format!("{} files checked", fmt_count(t.scanned))) }
                 }),
                 self.protection.is_running(),
             ),

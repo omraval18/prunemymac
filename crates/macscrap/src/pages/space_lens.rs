@@ -100,10 +100,12 @@ impl MacScrap {
             prompt: Some("Map Folder".into()),
         });
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                if let Some(path) = paths.into_iter().next() {
+            match rx.await {
+                Ok(Ok(Some(paths))) => if let Some(path) = paths.into_iter().next() {
                     this.update(cx, |this, cx| this.start_lens_scan(LensScope::Folder(path), cx)).ok();
-                }
+                },
+                Ok(Ok(None)) => {},
+                _ => { this.update(cx, |this, cx| { this.show_toast("Folder picker unavailable; check your desktop portal", false); cx.notify(); }).ok(); }
             }
         })
         .detach();

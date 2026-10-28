@@ -179,7 +179,7 @@ impl MacScrap {
         scroll_body("procs")
             .gap(px(14.))
             .child(note("info", if cfg!(target_os = "linux") {
-                "Expand an app to see its processes. System and unrecognized programs are protected; quitting can lose unsaved work."
+                "Expand an app to see its processes. Memory is the sum of process resident memory and can count shared pages more than once. System and unrecognized programs are protected."
             } else {
                 "Expand an app to see its processes. Only verified third-party app processes can be quit; quitting can lose unsaved work."
             }))
