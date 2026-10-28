@@ -172,6 +172,44 @@ pub fn app_bundle(executable: &Path) -> Option<PathBuf> {
     executable.ancestors().filter(|path| path.extension().is_some_and(|ext| ext == "app")).last().map(Path::to_path_buf)
 }
 
+
+/// Group Linux processes under a desktop app when possible, otherwise under
+/// the executable path / process name so they are not dumped into one "Other".
+#[cfg(target_os = "linux")]
+fn linux_process_group(
+    executable: Option<&Path>,
+    app_executables: &std::collections::HashMap<PathBuf, (PathBuf, String)>,
+    app_dirs: &[(PathBuf, PathBuf, String)],
+    process_name: &std::ffi::OsStr,
+) -> (Option<PathBuf>, Option<String>) {
+    let Some(raw) = executable else {
+        let name = process_name.to_string_lossy().into_owned();
+        return (Some(PathBuf::from(format!("proc:{name}"))), Some(name));
+    };
+    let exe = raw.canonicalize().unwrap_or_else(|_| raw.to_path_buf());
+    if let Some((path, name)) = app_executables.get(&exe) {
+        return (Some(path.clone()), Some(name.clone()));
+    }
+    // Helpers often live next to the main binary (Chrome, Electron, Flatpak).
+    if let Some(parent) = exe.parent() {
+        if let Some((_, path, name)) = app_dirs.iter().find(|(dir, _, _)| parent == dir || parent.starts_with(dir)) {
+            return (Some(path.clone()), Some(name.clone()));
+        }
+        // Flatpak exports point at wrappers; runtime binaries live under ~/.local/share/flatpak or /var/lib/flatpak.
+        let flatpak_marker = parent.components().any(|c| c.as_os_str() == "flatpak");
+        if flatpak_marker {
+            if let Some((_, path, name)) = app_dirs.iter().find(|(_, p, _)| {
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains(&process_name.to_string_lossy().to_string()))
+            }) {
+                return (Some(path.clone()), Some(name.clone()));
+            }
+        }
+    }
+    let label = exe.file_name().unwrap_or(process_name).to_string_lossy().into_owned();
+    // Key by basename so /usr/bin/node and /exec-daemon/node share a group.
+    (Some(PathBuf::from(format!("exe:{label}"))), Some(label))
+}
+
 /// Heaviest processes by CPU, then memory. Takes ~250ms because CPU usage
 /// needs two samples.
 pub fn heavy_processes(limit: usize) -> Vec<ProcessInfo> {
@@ -185,6 +223,10 @@ pub fn heavy_processes(limit: usize) -> Vec<ProcessInfo> {
     #[cfg(target_os = "linux")]
     let app_executables: std::collections::HashMap<PathBuf, (PathBuf, String)> = crate::apps::list(&crate::Cancel::new())
         .into_iter().filter_map(|app| app.executable.map(|exe| (exe, (app.path, app.name)))).collect();
+    #[cfg(target_os = "linux")]
+    let app_dirs: Vec<(PathBuf, PathBuf, String)> = app_executables.iter()
+        .filter_map(|(exe, (path, name))| exe.parent().map(|dir| (dir.to_path_buf(), path.clone(), name.clone())))
+        .collect();
     let mut procs: Vec<ProcessInfo> = sys
         .processes()
         .values()
@@ -202,9 +244,7 @@ pub fn heavy_processes(limit: usize) -> Vec<ProcessInfo> {
                 (bundle, name)
             };
             #[cfg(target_os = "linux")]
-            let (app_bundle, app_name) = executable.as_ref().and_then(|p| p.canonicalize().ok())
-                .and_then(|exe| app_executables.get(&exe).cloned())
-                .map(|(path, name)| (Some(path), Some(name))).unwrap_or((None, None));
+            let (app_bundle, app_name) = linux_process_group(executable.as_deref(), &app_executables, &app_dirs, p.name());
             ProcessInfo {
                 pid: p.pid().as_u32(),
                 name: p.name().to_string_lossy().into_owned(),
@@ -236,5 +276,43 @@ mod process_group_tests {
         let exe = Path::new("/Applications/Browser.app/Contents/Helpers/Browser Helper.app/Contents/MacOS/Helper");
         assert_eq!(app_bundle(exe), Some(PathBuf::from("/Applications/Browser.app")));
         assert_eq!(app_bundle(Path::new("/usr/bin/python3")), None);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_process_group_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn groups_helpers_in_the_same_directory_as_the_app() {
+        let mut apps = HashMap::new();
+        let chrome = PathBuf::from("/opt/google/chrome/google-chrome");
+        apps.insert(chrome.clone(), (PathBuf::from("/usr/share/applications/google-chrome.desktop"), "Google Chrome".into()));
+        let dirs = vec![(PathBuf::from("/opt/google/chrome"), PathBuf::from("/usr/share/applications/google-chrome.desktop"), "Google Chrome".into())];
+        let helper = Path::new("/opt/google/chrome/chrome");
+        let (bundle, name) = linux_process_group(Some(helper), &apps, &dirs, std::ffi::OsStr::new("chrome"));
+        assert_eq!(name.as_deref(), Some("Google Chrome"));
+        assert_eq!(bundle, Some(PathBuf::from("/usr/share/applications/google-chrome.desktop")));
+    }
+
+    #[test]
+    fn falls_back_to_executable_name_instead_of_other() {
+        let apps = HashMap::new();
+        let dirs = vec![];
+        let exe = PathBuf::from("/tmp/prunemymac-fake-proc-bin");
+        let (bundle, name) = linux_process_group(Some(&exe), &apps, &dirs, std::ffi::OsStr::new("python3"));
+        assert_eq!(name.as_deref(), Some("prunemymac-fake-proc-bin"));
+        assert_eq!(bundle, Some(PathBuf::from("exe:prunemymac-fake-proc-bin")));
+    }
+
+    #[test]
+    fn merges_same_basename_executables_into_one_group_key() {
+        let apps = HashMap::new();
+        let dirs = vec![];
+        let a = linux_process_group(Some(Path::new("/usr/bin/node")), &apps, &dirs, std::ffi::OsStr::new("node"));
+        let b = linux_process_group(Some(Path::new("/exec-daemon/node")), &apps, &dirs, std::ffi::OsStr::new("node"));
+        assert_eq!(a.1.as_deref(), Some("node"));
+        assert_eq!(a.0, b.0);
     }
 }

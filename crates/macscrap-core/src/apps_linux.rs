@@ -162,8 +162,31 @@ pub fn list(cancel: &Cancel) -> Vec<AppInfo> {
             }
         }
     }
+    // Collapse same-name launchers (e.g. google-chrome.desktop vs a wrapper
+    // like box-chrome.desktop) so the Uninstaller shows one row per app.
+    apps = collapse_same_name(apps);
     apps.sort_by_key(|a| a.name.to_lowercase());
     apps
+}
+
+fn app_rank(app: &AppInfo) -> (u8, u64, u8) {
+    let packaged = if app.package.is_some() || app.user_flatpak.is_some() { 2 }
+        else if !app.version.is_empty() || app.size > 0 { 1 } else { 0 };
+    let system = u8::from(app.path.starts_with("/usr") || app.path.starts_with("/var/lib"));
+    (packaged, app.size, system)
+}
+
+fn collapse_same_name(apps: Vec<AppInfo>) -> Vec<AppInfo> {
+    let mut by_name: HashMap<String, AppInfo> = HashMap::new();
+    for app in apps {
+        let key = app.name.to_lowercase();
+        match by_name.get(&key) {
+            None => { by_name.insert(key, app); }
+            Some(existing) if app_rank(&app) > app_rank(existing) => { by_name.insert(key, app); }
+            Some(_) => {}
+        }
+    }
+    by_name.into_values().collect()
 }
 
 pub fn leftovers(app: &AppInfo, cancel: &Cancel) -> Vec<Leftover> {
@@ -240,6 +263,28 @@ pub fn uninstall_user_flatpak(app: &AppInfo) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn collapse_same_name_keeps_packaged_entry() {
+        let packaged = AppInfo {
+            name: "Google Chrome".into(), bundle_id: "google-chrome".into(),
+            path: PathBuf::from("/usr/share/applications/google-chrome.desktop"),
+            version: "141.0".into(), size: 200_000_000, icon: None,
+            executable: Some(PathBuf::from("/opt/google/chrome/google-chrome")),
+            package: Some("google-chrome-stable".into()), user_flatpak: None,
+        };
+        let wrapper = AppInfo {
+            name: "Google Chrome".into(), bundle_id: "box-chrome".into(),
+            path: PathBuf::from("/home/box/.local/share/applications/box-chrome.desktop"),
+            version: String::new(), size: 0, icon: None,
+            executable: Some(PathBuf::from("/usr/local/bin/box-chrome")),
+            package: None, user_flatpak: None,
+        };
+        let kept = collapse_same_name(vec![wrapper, packaged]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].bundle_id, "google-chrome");
+        assert_eq!(kept[0].package.as_deref(), Some("google-chrome-stable"));
+    }
+
     #[test]
     fn desktop_parser_ignores_hidden_and_non_application_entries() {
         let dir = std::env::temp_dir().join(format!("prunemymac-desktop-{}", std::process::id()));

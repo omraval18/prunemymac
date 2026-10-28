@@ -36,6 +36,8 @@ pub fn header(title: &str, subtitle: &str, actions: impl IntoElement) -> Div {
         .items_end()
         .justify_between()
         .gap(px(16.))
+        .w_full()
+        .min_w_0()
         .child(page_header(title, subtitle))
         .child(div().flex().flex_none().items_center().gap(px(8.)).child(actions))
 }

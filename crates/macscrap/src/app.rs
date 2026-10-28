@@ -155,6 +155,32 @@ impl Threats {
     pub fn malicious(&self) -> usize {
         self.threats.iter().filter(|t| t.severity == Severity::Malicious).count()
     }
+
+    pub fn suspicious(&self) -> usize {
+        self.threats.iter().filter(|t| t.severity == Severity::Suspicious).count()
+    }
+
+    /// Sidebar / Overview indicator: malicious → red count, suspicious → orange
+    /// count, scan error → "!", clean → checkmark.
+    pub fn status_badge(&self) -> (&'static str, ProtectionBadge) {
+        if self.malicious() > 0 {
+            ("count", ProtectionBadge::Malicious)
+        } else if self.suspicious() > 0 {
+            ("count", ProtectionBadge::Suspicious)
+        } else if self.error.is_some() {
+            ("!", ProtectionBadge::Error)
+        } else {
+            ("✓", ProtectionBadge::Clean)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectionBadge {
+    Malicious,
+    Suspicious,
+    Error,
+    Clean,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -303,7 +329,7 @@ impl MacScrap {
             lens_chain: vec![],
             lens_selected: HashSet::new(),
             lens_scroll: gpui::UniformListScrollHandle::new(),
-            large_min: 500_000_000,
+            large_min: macscrap_core::files::LARGE_FILE_MIN,
             large_sort: LargeSort::Size,
             large_unused_only: false,
             large: Job::Idle,
@@ -556,7 +582,7 @@ impl MacScrap {
         self.spawn_job(
             cx,
             |s| &mut s.large,
-            |cancel, n| macscrap_core::files::large_files(&macscrap_core::fsutil::home(), 100_000_000, &cancel, &n),
+            |cancel, n| macscrap_core::files::large_files(&macscrap_core::fsutil::home(), macscrap_core::files::LARGE_FILE_MIN, &cancel, &n),
             |s| s.large_selected.clear(),
         );
     }
@@ -726,11 +752,18 @@ impl MacScrap {
             }),
             Page::Duplicates => self.dupes.done().map(|d| size(d.iter().map(|s| s.wasted()).sum())),
             Page::Protection => self.protection.done().map(|t| {
-                let suspicious = t.threats.iter().filter(|t| t.severity == Severity::Suspicious).count();
-                if t.malicious() > 0 { (t.malicious().to_string(), pl.red) }
-                else if suspicious > 0 { (suspicious.to_string(), pl.orange) }
-                else if t.error.is_some() { ("!".to_string(), pl.orange) }
-                else { ("✓".to_string(), pl.green) }
+                let (label, kind) = t.status_badge();
+                let text = match kind {
+                    ProtectionBadge::Malicious => t.malicious().to_string(),
+                    ProtectionBadge::Suspicious => t.suspicious().to_string(),
+                    _ => label.to_string(),
+                };
+                let color = match kind {
+                    ProtectionBadge::Malicious => pl.red,
+                    ProtectionBadge::Suspicious | ProtectionBadge::Error => pl.orange,
+                    ProtectionBadge::Clean => pl.green,
+                };
+                (text, color)
             }),
             _ => None,
         }
@@ -1002,5 +1035,35 @@ pub fn run_as_admin(shell: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod protection_badge_tests {
+    use super::*;
+    use macscrap_core::malware::{Severity, Threat};
+    use std::path::PathBuf;
+
+    fn threat(severity: Severity) -> Threat {
+        Threat { path: PathBuf::from("/tmp/x"), name: "t".into(), source: "test", severity }
+    }
+
+    #[test]
+    fn badge_prefers_malicious_then_suspicious_then_error() {
+        let mut t = Threats { threats: vec![threat(Severity::Suspicious)], error: Some("boom".into()), ..Default::default() };
+        assert_eq!(t.status_badge(), ("count", ProtectionBadge::Suspicious));
+        t.threats.push(threat(Severity::Malicious));
+        assert_eq!(t.status_badge(), ("count", ProtectionBadge::Malicious));
+        t.threats.clear();
+        assert_eq!(t.status_badge(), ("!", ProtectionBadge::Error));
+        t.error = None;
+        assert_eq!(t.status_badge(), ("✓", ProtectionBadge::Clean));
+    }
+
+    #[test]
+    fn suspicious_count_drives_review_indicator() {
+        let t = Threats { threats: vec![threat(Severity::Suspicious), threat(Severity::Info)], ..Default::default() };
+        assert_eq!(t.suspicious(), 1);
+        assert_eq!(t.malicious(), 0);
     }
 }

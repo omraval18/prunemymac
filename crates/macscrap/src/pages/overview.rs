@@ -77,10 +77,15 @@ impl MacScrap {
         (items.iter().map(|i| i.1).sum(), items)
     }
 
+    fn found_junk_bytes(&self) -> u64 {
+        self.junk.done().map(|g| g.iter().map(|g| g.size()).sum()).unwrap_or(0)
+    }
+
     fn hero(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let pl = p();
         let running = self.smart_scan_running();
         let (safe, _) = self.safe_junk();
+        let found = self.found_junk_bytes();
         let threats = self.protection.done().map(|t| t.malicious()).unwrap_or(0);
         let suspicious = self.protection.done().map(|t| t.threats.iter().filter(|t| t.severity == macscrap_core::malware::Severity::Suspicious).count()).unwrap_or(0);
 
@@ -102,6 +107,10 @@ impl MacScrap {
             ("alert", pl.orange, "Protection scan incomplete".into(), "Open Protection for details and available scan options.".into())
         } else if safe > 0 {
             ("sparkles", pl.green, format!("{} can be freed safely", human_bytes(safe)), "Caches, logs and leftovers apps rebuild on their own. No malware found.".into())
+        } else if found > 0 {
+            // Linux rules are review-only, so nothing is pre-selected. Still
+            // surface the same total the Cleanup tile shows.
+            ("sparkles", pl.accent, format!("{} of junk to review", human_bytes(found)), "Open Cleanup to review it. Nothing is removed until you select it.".into())
         } else {
             ("check-circle", pl.green, if cfg!(target_os = "linux") { "Your computer is in great shape" } else { "Your Mac is in great shape" }.into(), "No junk worth cleaning and no malware found.".into())
         };
@@ -167,7 +176,8 @@ impl MacScrap {
         });
         let startup = self.launch.done().map(|l| l.iter().filter(|i| !i.is_apple()).count());
         let large: Option<(usize, u64)> = self.large.done().map(|f| {
-            let big: Vec<_> = f.iter().filter(|f| f.size >= 500_000_000).collect();
+            let threshold = self.large_min;
+            let big: Vec<_> = f.iter().filter(|f| f.size >= threshold).collect();
             (big.len(), big.iter().map(|f| f.size).sum())
         });
 
@@ -212,7 +222,7 @@ impl MacScrap {
                 "file",
                 pl.indigo,
                 "Large Files",
-                large.map(|(n, size)| (format!("{n} files"), format!("{} over 500 MB", human_bytes(size)))),
+                large.map(|(n, size)| (format!("{n} files"), format!("{} over {}", human_bytes(size), human_bytes(self.large_min)))),
                 self.large.is_running(),
             ),
         ];

@@ -1,5 +1,8 @@
 //! Large/old file finder and duplicate finder.
 
+/// Shared floor for large-file scans and the default Overview / sidebar threshold.
+pub const LARGE_FILE_MIN: u64 = 100_000_000;
+
 use crate::fsutil::{self, Cancel};
 use rayon::prelude::*;
 use std::collections::HashMap;
