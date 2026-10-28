@@ -328,6 +328,8 @@ pub fn section_label(label: &str) -> Div {
 }
 
 pub fn page_header(title: &str, subtitle: &str) -> Div {
+    // Do not truncate the subtitle: with flex shrink that collapsed every page
+    // header to a literal "..." line. Let it wrap within the available width.
     div()
         .flex()
         .flex_col()
@@ -335,7 +337,9 @@ pub fn page_header(title: &str, subtitle: &str) -> Div {
         .min_w_0()
         .flex_1()
         .child(text(TITLE, p().text).font_family("Geist").font_weight(FontWeight::BOLD).child(title.to_string()))
-        .child(text(BODY, p().text2).min_w_0().truncate().child(subtitle.to_string()))
+        .when(!subtitle.is_empty(), |d| {
+            d.child(text(BODY, p().text2).min_w_0().w_full().child(subtitle.to_string()))
+        })
 }
 
 /// Centered placeholder: icon, title, one line of guidance, optional action.

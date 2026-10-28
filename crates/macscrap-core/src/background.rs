@@ -206,7 +206,8 @@ fn linux_process_group(
         }
     }
     let label = exe.file_name().unwrap_or(process_name).to_string_lossy().into_owned();
-    (Some(exe), Some(label))
+    // Key by basename so /usr/bin/node and /exec-daemon/node share a group.
+    (Some(PathBuf::from(format!("exe:{label}"))), Some(label))
 }
 
 /// Heaviest processes by CPU, then memory. Takes ~250ms because CPU usage
@@ -302,6 +303,16 @@ mod linux_process_group_tests {
         let exe = PathBuf::from("/tmp/prunemymac-fake-proc-bin");
         let (bundle, name) = linux_process_group(Some(&exe), &apps, &dirs, std::ffi::OsStr::new("python3"));
         assert_eq!(name.as_deref(), Some("prunemymac-fake-proc-bin"));
-        assert_eq!(bundle, Some(exe));
+        assert_eq!(bundle, Some(PathBuf::from("exe:prunemymac-fake-proc-bin")));
+    }
+
+    #[test]
+    fn merges_same_basename_executables_into_one_group_key() {
+        let apps = HashMap::new();
+        let dirs = vec![];
+        let a = linux_process_group(Some(Path::new("/usr/bin/node")), &apps, &dirs, std::ffi::OsStr::new("node"));
+        let b = linux_process_group(Some(Path::new("/exec-daemon/node")), &apps, &dirs, std::ffi::OsStr::new("node"));
+        assert_eq!(a.1.as_deref(), Some("node"));
+        assert_eq!(a.0, b.0);
     }
 }

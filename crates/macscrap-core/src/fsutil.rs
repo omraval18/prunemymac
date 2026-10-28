@@ -177,9 +177,11 @@ pub fn prune_user_noise(path: &Path) -> bool {
 /// deleting copies inside these — they are live application data.
 pub fn is_browser_profile_dir(path: &Path) -> bool {
     let home = home();
-    let markers = [
+    let known = [
         home.join(".config/google-chrome"),
+        home.join(".config/google-chrome-headless"),
         home.join(".config/chromium"),
+        home.join(".config/chromium-headless"),
         home.join(".config/BraveSoftware"),
         home.join(".config/microsoft-edge"),
         home.join(".config/opera"),
@@ -192,7 +194,45 @@ pub fn is_browser_profile_dir(path: &Path) -> bool {
         home.join("Library/Application Support/Microsoft Edge"),
         home.join("Library/Application Support/Firefox"),
     ];
-    markers.iter().any(|root| path == root || path.starts_with(root))
+    if known.iter().any(|root| path == root || path.starts_with(root)) {
+        return true;
+    }
+    // Non-standard locations (e.g. ~/chrome-profile/Fork-*, custom --user-data-dir):
+    // treat a directory (or anything under it) as a profile when it has Chromium /
+    // Firefox marker files, optionally reinforced by a browser-like name.
+    path.ancestors().take(12).any(|dir| {
+        if dir == Path::new("/") || dir == Path::new("") {
+            return false;
+        }
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+        let named = browser_like_name(&name);
+        let marked = has_browser_profile_markers(dir);
+        marked || (named && (dir.join("Default").is_dir() || dir.join("Profile 1").is_dir()))
+    })
+}
+
+fn browser_like_name(name: &str) -> bool {
+    name.contains("chrome")
+        || name.contains("chromium")
+        || name.contains("brave")
+        || name.contains("firefox")
+        || name.contains("mozilla")
+        || name.contains("vivaldi")
+        || name.contains("opera")
+        || name.contains("msedge")
+        || name.contains("microsoft-edge")
+        || name.contains("headless")
+        || name.ends_with("-headless")
+}
+
+/// Chromium / Firefox user-data markers at the root of a profile tree.
+fn has_browser_profile_markers(dir: &Path) -> bool {
+    dir.join("Local State").is_file()
+        || dir.join("First Run").exists()
+        || dir.join("Default").join("Preferences").is_file()
+        || dir.join("profiles.ini").is_file()
+        || dir.join("prefs.js").is_file()
+        || dir.join("Default").join("prefs.js").is_file()
 }
 
 pub fn human_bytes(b: u64) -> String {
@@ -239,5 +279,38 @@ mod linux_protection_tests {
         assert!(is_browser_profile_dir(&profile));
         assert!(prune_user_noise(&chrome));
         assert!(!is_browser_profile_dir(&home().join("Documents")));
+    }
+
+    #[test]
+    fn detects_nonstandard_chrome_user_data_dirs_by_markers_and_name() {
+        let root = home().join(format!(".prunemymac-chrome-profile-test-{}", std::process::id()));
+        let fork = root.join("Fork-1");
+        let headless = home().join(format!(".prunemymac-chrome-headless-test-{}", std::process::id()));
+        let innocent = home().join(format!(".prunemymac-notes-test-{}", std::process::id()));
+        std::fs::create_dir_all(fork.join("Default")).unwrap();
+        std::fs::write(fork.join("Local State"), b"{}").unwrap();
+        std::fs::write(fork.join("Default/Preferences"), b"{}").unwrap();
+        std::fs::create_dir_all(headless.join("Default")).unwrap();
+        std::fs::write(headless.join("Local State"), b"{}").unwrap();
+        std::fs::create_dir_all(&innocent).unwrap();
+        std::fs::write(innocent.join("readme.txt"), b"hi").unwrap();
+
+        assert!(is_browser_profile_dir(&fork));
+        assert!(is_browser_profile_dir(&fork.join("Default/Preferences")));
+        assert!(prune_user_noise(&fork));
+        assert!(is_browser_profile_dir(&headless));
+        assert!(prune_user_noise(&headless));
+        // A normal folder must not be treated as a browser profile.
+        assert!(!is_browser_profile_dir(&innocent));
+        assert!(!prune_user_noise(&innocent));
+        // Browser-like name alone without markers / Default is not enough.
+        let named_only = home().join(format!(".prunemymac-chrome-named-only-{}", std::process::id()));
+        std::fs::create_dir_all(&named_only).unwrap();
+        assert!(!is_browser_profile_dir(&named_only));
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&headless).ok();
+        std::fs::remove_dir_all(&innocent).ok();
+        std::fs::remove_dir_all(&named_only).ok();
     }
 }

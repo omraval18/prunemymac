@@ -98,9 +98,12 @@ impl MacScrap {
             return scanning_view("Measuring activity", "Sampling CPU and memory".into(), None).into_any_element();
         };
         let gen = *gen;
-        let mut by_app = std::collections::BTreeMap::<Option<std::path::PathBuf>, Vec<_>>::new();
+        // Merge groups that share a display name or executable basename
+        // (e.g. /usr/bin/node and /exec-daemon/node both show as "node").
+        let mut by_app = std::collections::BTreeMap::<String, Vec<_>>::new();
         for proc_ in procs.iter().cloned() {
-            by_app.entry(proc_.app_bundle.clone()).or_default().push(proc_);
+            let key = process_group_key(&proc_);
+            by_app.entry(key).or_default().push(proc_);
         }
         let mut groups: Vec<_> = by_app.into_iter().collect();
         groups.sort_by(|(_, a), (_, b)| {
@@ -108,13 +111,18 @@ impl MacScrap {
             let b_cpu: f32 = b.iter().map(|p| p.cpu).sum();
             b_cpu.total_cmp(&a_cpu)
         });
-        let sections: Vec<AnyElement> = groups.into_iter().enumerate().map(|(group_ix, (bundle, procs))| {
-            let name = procs.first().and_then(|p| p.app_name.clone()).or_else(|| bundle.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()))
+        let sections: Vec<AnyElement> = groups.into_iter().enumerate().map(|(group_ix, (key, procs))| {
+            let name = procs
+                .first()
+                .and_then(|p| p.app_name.clone())
+                .filter(|n| !n.is_empty())
+                .or_else(|| procs.first().map(|p| p.name.clone()))
+                .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| "Other processes".into());
             let cpu: f32 = procs.iter().map(|p| p.cpu).sum();
             let memory: u64 = procs.iter().map(|p| p.memory).sum();
             let count = procs.len();
-            let key = bundle.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "other-processes".into());
+            let key = key;
             let expanded = self.process_groups_expanded.contains(&key);
             let toggle_key = key.clone();
             let rows: Vec<AnyElement> = if expanded { procs.into_iter().enumerate().map(|(ix, proc_)| {
@@ -316,6 +324,21 @@ impl MacScrap {
             .child(grouped(rows))
             .into_any_element()
     }
+}
+
+
+fn process_group_key(proc_: &macscrap_core::background::ProcessInfo) -> String {
+    if let Some(name) = proc_.app_name.as_ref().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+        return format!("name:{}", name.to_ascii_lowercase());
+    }
+    if let Some(exe) = proc_.executable.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+        return format!("exe:{}", exe.to_ascii_lowercase());
+    }
+    let pname = proc_.name.trim();
+    if !pname.is_empty() {
+        return format!("proc:{}", pname.to_ascii_lowercase());
+    }
+    "other-processes".into()
 }
 
 pub fn note(icon_name: &str, message: &str) -> Div {
