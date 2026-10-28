@@ -156,13 +156,25 @@ fn read_into(fd: i32, attrs: &mut libc::attrlist, buf: &mut [u8]) -> std::io::Re
     Ok(out)
 }
 
-/// Portable fallback with one `lstat` per entry.
+/// Portable listing. On Linux, trust `d_type` when the kernel provides it so
+/// sockets/fifos/symlinks skip `lstat`; files and dirs still need metadata for
+/// size and device id (same-filesystem checks).
 pub(crate) fn read_std(path: &Path) -> std::io::Result<Listing> {
     let mut out = Listing::default();
     for e in std::fs::read_dir(path)?.flatten() {
+        let name = e.file_name();
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(ft) = e.file_type() {
+                if ft.is_symlink() || (!ft.is_dir() && !ft.is_file()) {
+                    out.push(name.as_bytes(), Kind::Other, 0, 0, 0);
+                    continue;
+                }
+            }
+        }
         let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
         let kind = if m.is_dir() { Kind::Dir } else if m.is_file() { Kind::File } else { Kind::Other };
-        out.push(e.file_name().as_bytes(), kind, m.dev() as i32, m.blocks() * 512, if m.is_file() { m.len() } else { 0 });
+        out.push(name.as_bytes(), kind, m.dev() as i32, m.blocks() * 512, if m.is_file() { m.len() } else { 0 });
     }
     Ok(out)
 }

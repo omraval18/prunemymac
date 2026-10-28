@@ -7,7 +7,7 @@ use crate::fsutil::{self, Cancel};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,35 +64,78 @@ impl DuplicateSet {
     }
 }
 
-fn hash_prefix(path: &Path) -> Option<u64> {
-    let mut buf = [0u8; 16 * 1024];
+const PARTIAL_CHUNK: u64 = 16 * 1024;
+
+/// Fast reject: xxh3 of the first and (when large enough) last 16 KiB.
+pub(crate) fn hash_partial(path: &Path, size: u64) -> Option<u64> {
+    let mut buf = [0u8; PARTIAL_CHUNK as usize];
     let mut f = File::open(path).ok()?;
     let n = f.read(&mut buf).ok()?;
-    Some(xxhash_rust::xxh3::xxh3_64(&buf[..n]))
+    let first = xxhash_rust::xxh3::xxh3_64(&buf[..n]);
+    if size <= PARTIAL_CHUNK || (n as u64) < PARTIAL_CHUNK {
+        return Some(first);
+    }
+    f.seek(SeekFrom::End(-(PARTIAL_CHUNK as i64))).ok()?;
+    let n2 = f.read(&mut buf).ok()?;
+    let last = xxhash_rust::xxh3::xxh3_64(&buf[..n2]);
+    let mut mix = [0u8; 16];
+    mix[..8].copy_from_slice(&first.to_le_bytes());
+    mix[8..].copy_from_slice(&last.to_le_bytes());
+    Some(xxhash_rust::xxh3::xxh3_64(&mix))
 }
 
 fn hash_full(path: &Path) -> Option<[u8; 32]> {
     let mut h = blake3::Hasher::new();
-    h.update_mmap(path).ok()?;
+    // Prefer mmap; fall back to a bounded buffered read so huge files never
+    // need an unbounded Vec.
+    match h.update_mmap(path) {
+        Ok(_) => {}
+        Err(_) => {
+            let mut f = File::open(path).ok()?;
+            let mut buf = vec![0u8; 256 * 1024];
+            loop {
+                let n = f.read(&mut buf).ok()?;
+                if n == 0 {
+                    break;
+                }
+                h.update(&buf[..n]);
+            }
+        }
+    }
     Some(*h.finalize().as_bytes())
 }
 
-/// Exact duplicates: group by size → 16 KB prefix hash → full BLAKE3.
+/// Exact duplicates: group by size → first/last 16 KB xxh3 → full BLAKE3.
 /// Hard links to the same inode are not reported as duplicates.
+/// Full hashing runs on a small dedicated pool so we don't thrash the disk.
 pub fn duplicates(root: &Path, min_size: u64, cancel: &Cancel, scanned: &AtomicU64) -> Vec<DuplicateSet> {
-    let files = collect(root, min_size.max(1), cancel, scanned);
-
+    let min_size = min_size.max(1);
     let mut by_size: HashMap<u64, Vec<FileEntry>> = HashMap::new();
     let mut seen_inodes = std::collections::HashSet::new();
-    for f in files {
-        let Ok(m) = std::fs::metadata(&f.path) else { continue };
-        if !seen_inodes.insert((m.dev(), m.ino())) {
-            continue;
-        }
-        by_size.entry(m.len()).or_default().push(f);
-    }
 
-    let refine = |groups: Vec<Vec<FileEntry>>, key: &(dyn Fn(&Path) -> Option<Vec<u8>> + Sync)| {
+    // Single walk + one metadata call per candidate (size/inode/dates).
+    fsutil::walk(root, cancel, fsutil::prune_user_noise, &mut |dir, name, _allocated, len| {
+        scanned.fetch_add(1, Ordering::Relaxed);
+        if len < min_size {
+            return;
+        }
+        let path = dir.join(name);
+        let Ok(m) = std::fs::symlink_metadata(&path) else { return };
+        if !m.is_file() {
+            return;
+        }
+        if !seen_inodes.insert((m.dev(), m.ino())) {
+            return;
+        }
+        by_size.entry(len).or_default().push(FileEntry {
+            size: len,
+            modified: m.modified().ok(),
+            accessed: m.accessed().ok(),
+            path,
+        });
+    });
+
+    let refine = |groups: Vec<Vec<FileEntry>>, key: &(dyn Fn(&FileEntry) -> Option<Vec<u8>> + Sync)| {
         groups
             .into_par_iter()
             .flat_map_iter(|group| {
@@ -101,7 +144,7 @@ pub fn duplicates(root: &Path, min_size: u64, cancel: &Cancel, scanned: &AtomicU
                     if cancel.is_cancelled() {
                         break;
                     }
-                    if let Some(k) = key(&f.path) {
+                    if let Some(k) = key(&f) {
                         buckets.entry(k).or_default().push(f);
                     }
                 }
@@ -111,18 +154,85 @@ pub fn duplicates(root: &Path, min_size: u64, cancel: &Cancel, scanned: &AtomicU
     };
 
     let candidates: Vec<Vec<FileEntry>> = by_size.into_values().filter(|g| g.len() > 1).collect();
-    let candidates = refine(candidates, &|p| hash_prefix(p).map(|h| h.to_le_bytes().to_vec()));
-    let confirmed = refine(candidates, &|p| hash_full(p).map(|h| h.to_vec()));
+    let candidates = refine(candidates, &|f| hash_partial(&f.path, f.size).map(|h| h.to_le_bytes().to_vec()));
+
+    // Bound concurrent full-file reads: 2 keep SSDs busy without queueing the page cache.
+    let hash_threads = std::thread::available_parallelism().map(|n| n.get().clamp(1, 4)).unwrap_or(4);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(hash_threads)
+        .thread_name(|i| format!("macscrap-hash-{i}"))
+        .build()
+        .expect("hash pool");
+    let confirmed = pool.install(|| refine(candidates, &|f| hash_full(&f.path).map(|h| h.to_vec())));
 
     let mut sets: Vec<DuplicateSet> = confirmed
         .into_iter()
         .map(|mut files| {
             // Oldest copy first: it's the one we suggest keeping.
             files.sort_by_key(|f| f.modified);
-            let size = std::fs::metadata(&files[0].path).map(|m| m.len()).unwrap_or(0);
+            let size = files.first().map(|f| f.size).unwrap_or(0);
             DuplicateSet { size, files }
         })
         .collect();
     sets.sort_by(|a, b| b.wasted().cmp(&a.wasted()));
     sets
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn partial_hash_differs_when_only_tail_changes() {
+        let dir = std::env::temp_dir().join(format!("prunemymac-dup-hash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.bin");
+        let b = dir.join("b.bin");
+        let mut body = vec![0u8; 64 * 1024];
+        for (i, x) in body.iter_mut().enumerate() {
+            *x = (i % 251) as u8;
+        }
+        std::fs::write(&a, &body).unwrap();
+        let last = body.len() - 1;
+        body[last] ^= 0xff;
+        std::fs::write(&b, &body).unwrap();
+        let ha = hash_partial(&a, 64 * 1024).unwrap();
+        let hb = hash_partial(&b, 64 * 1024).unwrap();
+        assert_ne!(ha, hb, "tail-only change must change partial hash");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicates_find_identical_copies_and_ignore_unique() {
+        let dir = std::env::temp_dir().join(format!("prunemymac-dup-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let payload = vec![0x5au8; 1_500_000];
+        std::fs::write(dir.join("one.dat"), &payload).unwrap();
+        std::fs::write(dir.join("two.dat"), &payload).unwrap();
+        let mut other = payload.clone();
+        other[0] = 0x11;
+        std::fs::write(dir.join("other.dat"), &other).unwrap();
+        let sets = duplicates(&dir, 1_000_000, &Cancel::new(), &AtomicU64::new(0));
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].files.len(), 2);
+        assert_eq!(sets[0].size, 1_500_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn partial_hash_small_file_is_stable() {
+        let dir = std::env::temp_dir().join(format!("prunemymac-dup-small-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("tiny.bin");
+        let mut f = File::create(&p).unwrap();
+        f.write_all(b"hello-prunemymac").unwrap();
+        let h1 = hash_partial(&p, 16).unwrap();
+        let h2 = hash_partial(&p, 16).unwrap();
+        assert_eq!(h1, h2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
