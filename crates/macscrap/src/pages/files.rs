@@ -48,7 +48,7 @@ impl MacScrap {
             return page(head, None, empty_view("file", pl.indigo, "Find what's taking up space", "Videos, archives and disk images add up quickly. You choose what to move to the Trash.", Some(scan)), None);
         }
 
-        let thresholds = [(100_000_000u64, "100 MB"), (500_000_000, "500 MB"), (1_000_000_000, "1 GB")];
+        let thresholds = [(macscrap_core::files::LARGE_FILE_MIN, "100 MB"), (500_000_000, "500 MB"), (1_000_000_000, "1 GB")];
         let toolbar = div()
             .flex()
             .items_center()

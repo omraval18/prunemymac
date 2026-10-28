@@ -170,6 +170,29 @@ pub fn prune_user_noise(path: &Path) -> bool {
         || path.ends_with("Library/Photos")
         || name.ends_with(".photoslibrary")
         || name.ends_with(".app")
+        || is_browser_profile_dir(path)
+}
+
+/// Browser profile / app-state trees. Duplicate scans should not suggest
+/// deleting copies inside these — they are live application data.
+pub fn is_browser_profile_dir(path: &Path) -> bool {
+    let home = home();
+    let markers = [
+        home.join(".config/google-chrome"),
+        home.join(".config/chromium"),
+        home.join(".config/BraveSoftware"),
+        home.join(".config/microsoft-edge"),
+        home.join(".config/opera"),
+        home.join(".config/vivaldi"),
+        home.join(".mozilla"),
+        home.join(".config/mozilla"),
+        home.join("Library/Application Support/Google/Chrome"),
+        home.join("Library/Application Support/Chromium"),
+        home.join("Library/Application Support/BraveSoftware"),
+        home.join("Library/Application Support/Microsoft Edge"),
+        home.join("Library/Application Support/Firefox"),
+    ];
+    markers.iter().any(|root| path == root || path.starts_with(root))
 }
 
 pub fn human_bytes(b: u64) -> String {
@@ -206,5 +229,15 @@ mod linux_protection_tests {
         assert!(is_protected(&link));
         assert!(is_protected(&dir.join("..").join("..").join("etc")));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn browser_profile_dirs_are_pruned_from_user_searches() {
+        let chrome = home().join(".config/google-chrome");
+        let profile = chrome.join("Default/Preferences");
+        assert!(is_browser_profile_dir(&chrome));
+        assert!(is_browser_profile_dir(&profile));
+        assert!(prune_user_noise(&chrome));
+        assert!(!is_browser_profile_dir(&home().join("Documents")));
     }
 }

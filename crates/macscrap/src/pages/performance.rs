@@ -322,9 +322,11 @@ pub fn note(icon_name: &str, message: &str) -> Div {
     let pl = p();
     div()
         .flex()
-        .items_center()
+        .items_start()
         .gap(px(8.))
         .px(px(4.))
-        .child(icon(icon_name, pl.text3, 13.))
-        .child(text(CAPTION, pl.text3).child(message.to_string()))
+        .w_full()
+        .min_w_0()
+        .child(div().pt(px(1.)).flex_none().child(icon(icon_name, pl.text3, 13.)))
+        .child(text(CAPTION, pl.text3).flex_1().min_w_0().child(message.to_string()))
 }

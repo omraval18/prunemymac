@@ -333,8 +333,9 @@ pub fn page_header(title: &str, subtitle: &str) -> Div {
         .flex_col()
         .gap(px(3.))
         .min_w_0()
+        .flex_1()
         .child(text(TITLE, p().text).font_family("Geist").font_weight(FontWeight::BOLD).child(title.to_string()))
-        .child(text(BODY, p().text2).child(subtitle.to_string()))
+        .child(text(BODY, p().text2).min_w_0().truncate().child(subtitle.to_string()))
 }
 
 /// Centered placeholder: icon, title, one line of guidance, optional action.
