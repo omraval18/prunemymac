@@ -88,7 +88,11 @@ impl MacScrap {
         let pl = p();
         let mut body = scroll_body("network-ports-list").gap(px(12.))
             .child(note("info", "Shows listening TCP ports and bound UDP sockets visible to your account. Some system or other users' ports may be missing."))
-            .child(note("lock", "System, privileged, and unverified processes are protected. Stopping an app may interrupt work or services even on a high-numbered port."));
+            .child(note("lock", if cfg!(target_os = "linux") {
+                "System processes, privileged ports, and unrecognized programs are protected. Stopping a program can interrupt work or services."
+            } else {
+                "System, privileged, and unverified processes are protected. Stopping an app may interrupt work or services even on a high-numbered port."
+            }));
         match &self.network_ports {
             None => body = body.child(note("loader", "Reading ports…")),
             Some(Err(error)) => body = body.child(note("alert", error)),

@@ -2,6 +2,7 @@
 //! `getattrlistbulk(2)` call returns names, types and allocated sizes for
 //! many entries at once, instead of one `lstat` per file.
 
+#[cfg(target_os = "macos")]
 use std::ffi::{CStr, CString};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -45,12 +46,16 @@ pub(crate) enum Kind {
     Other,
 }
 
+#[cfg(target_os = "macos")]
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
+#[cfg(target_os = "macos")]
 const VREG: u32 = 1;
+#[cfg(target_os = "macos")]
 const VDIR: u32 = 2;
 
 /// Read one directory with `getattrlistbulk`. Entries are packed as:
 /// length, returned-attrs set, [error], name ref, devid, objtype, [allocsize].
+#[cfg(target_os = "macos")]
 pub(crate) fn read_bulk(path: &Path) -> std::io::Result<Listing> {
     let cpath = CString::new(path.as_os_str().as_bytes())?;
     let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
@@ -82,6 +87,7 @@ pub(crate) fn read_bulk(path: &Path) -> std::io::Result<Listing> {
     BUF.with_borrow_mut(|buf| read_into(fd, &mut attrs, buf))
 }
 
+#[cfg(target_os = "macos")]
 fn read_into(fd: i32, attrs: &mut libc::attrlist, buf: &mut [u8]) -> std::io::Result<Listing> {
     let mut out = Listing::default();
     loop {
@@ -163,6 +169,9 @@ pub(crate) fn read_std(path: &Path) -> std::io::Result<Listing> {
 
 /// Fast listing with a portable fallback.
 pub(crate) fn read_entries(path: &Path) -> std::io::Result<Listing> {
-    read_bulk(path).or_else(|_| read_std(path))
+    #[cfg(target_os = "macos")]
+    { read_bulk(path).or_else(|_| read_std(path)) }
+    #[cfg(not(target_os = "macos"))]
+    { read_std(path) }
 }
 

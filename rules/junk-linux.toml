@@ -1,0 +1,43 @@
+# Linux cleanup rules. Items are confined to the current user's home directory.
+[[rule]]
+id = "trash"
+name = "Trash"
+category = "Trash"
+description = "Files already moved to the Trash. Emptying it permanently removes them."
+icon = "trash"
+paths = ["~/.local/share/Trash/files/*"]
+action = "delete"
+safety = "review"
+
+[[rule]]
+id = "browser-cache"
+name = "Browser Caches"
+category = "Apps"
+description = "Cached browser resources that can be downloaded again."
+icon = "globe"
+paths = ["~/.cache/mozilla/firefox/*/cache2", "~/.cache/google-chrome/*/Cache", "~/.cache/chromium/*/Cache", "~/.cache/BraveSoftware/Brave-Browser/*/Cache"]
+action = "trash"
+safety = "review"
+min_age_days = 7
+
+[[rule]]
+id = "thumbnail-cache"
+name = "Thumbnail Cache"
+category = "System"
+description = "Generated file thumbnails; your desktop can recreate them."
+icon = "image"
+paths = ["~/.cache/thumbnails/*"]
+action = "trash"
+safety = "review"
+min_age_days = 30
+
+[[rule]]
+id = "developer-cache"
+name = "Developer Caches"
+category = "Developer"
+description = "Downloaded package caches that may be needed again by development tools."
+icon = "code"
+paths = ["~/.cache/pip", "~/.cache/uv", "~/.npm/_cacache", "~/.cache/yarn"]
+action = "trash"
+safety = "review"
+min_age_days = 30

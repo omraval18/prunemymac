@@ -122,6 +122,20 @@ fn walk_dir(dir: PathBuf, dev: i32, cancel: &Cancel, prune: fn(&Path) -> bool, t
 /// Paths the cleaner must never remove, even if a rule or the user asks.
 pub fn is_protected(path: &Path) -> bool {
     let home = home();
+    #[cfg(target_os = "linux")]
+    {
+        // Cleanup and Trash actions never remove system files or escape HOME.
+        if !path.is_absolute() || !path.starts_with(&home)
+            || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) { return true; }
+        let Ok(root) = home.canonicalize() else { return true };
+        let Ok(resolved) = path.canonicalize() else { return true };
+        if !resolved.starts_with(&root) { return true; }
+        let protected = [root.clone(), root.join("Documents"), root.join("Desktop"), root.join("Downloads"),
+            root.join(".config"), root.join(".local"), root.join(".local/share"), root.join(".cache")];
+        return protected.iter().any(|p| *p == resolved);
+    }
+    #[cfg(target_os = "macos")]
+    {
     let exact: [PathBuf; 14] = [
         "/".into(),
         "/System".into(),
@@ -142,6 +156,7 @@ pub fn is_protected(path: &Path) -> bool {
         return true;
     }
     path.starts_with("/System") || path.starts_with("/usr") || path.starts_with("/bin") || path.starts_with("/sbin")
+    }
 }
 
 /// Prune rule for user-facing searches: caches, VCS internals, dependency
@@ -169,5 +184,27 @@ pub fn human_bytes(b: u64) -> String {
         format!("{b} B")
     } else {
         format!("{v:.1} {}", UNITS[i])
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_protection_tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_is_confined_to_home_and_cannot_follow_escape_links() {
+        let home = home();
+        let dir = home.join(format!(".prunemymac-protection-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("file");
+        std::fs::write(&file, b"test").unwrap();
+        let link = dir.join("outside");
+        std::os::unix::fs::symlink("/tmp", &link).unwrap();
+        assert!(!is_protected(&file));
+        assert!(is_protected(&home));
+        assert!(is_protected(Path::new("/etc")));
+        assert!(is_protected(&link));
+        assert!(is_protected(&dir.join("..").join("..").join("etc")));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

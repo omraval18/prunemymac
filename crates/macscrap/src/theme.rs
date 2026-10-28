@@ -98,10 +98,14 @@ pub fn is_dark() -> bool {
 
 /// Honor System Settings → Accessibility → Display → Reduce motion.
 pub fn load_motion_preference() {
+    #[cfg(target_os = "macos")]
     let reduce = std::process::Command::new("/usr/bin/defaults")
         .args(["read", "com.apple.universalaccess", "reduceMotion"])
         .output()
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1");
+    #[cfg(target_os = "linux")]
+    let reduce = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "enable-animations"])
+        .output().is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "false");
     REDUCE_MOTION.store(reduce, Ordering::Relaxed);
 }
 

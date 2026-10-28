@@ -43,21 +43,42 @@ pub fn remove_tracked(path: &Path, method: Method, progress: &Progress) -> Resul
                 if path.exists() {
                     return Err("some files are in use or protected".into());
                 }
+                #[cfg(target_os = "linux")]
+                remove_trash_info(path);
                 Ok(())
             } else {
                 std::fs::remove_file(path).map_err(|e| e.to_string())?;
                 progress.freed.fetch_add(fsutil::allocated(&meta), Ordering::Relaxed);
                 progress.files.fetch_add(1, Ordering::Relaxed);
+                #[cfg(target_os = "linux")]
+                remove_trash_info(path);
                 Ok(())
             }
         }
         Method::Trash => {
+            #[cfg(target_os = "macos")]
+            {
             use trash::macos::{DeleteMethod, TrashContextExtMacos};
             let mut ctx = trash::TrashContext::default();
             ctx.set_delete_method(DeleteMethod::NsFileManager);
             ctx.delete(path).map_err(|e| e.to_string())
+            }
+            #[cfg(target_os = "linux")]
+            { trash::delete(path).map_err(|e| e.to_string()) }
         }
     }
+}
+
+// Keep a Trash entry's restore information until its file has actually gone.
+#[cfg(target_os = "linux")]
+fn remove_trash_info(path: &Path) {
+    let trash = fsutil::home().join(".local/share/Trash");
+    if path.parent() != Some(trash.join("files").as_path()) { return; }
+    let Some(name) = path.file_name() else { return };
+    let mut info_name = name.to_os_string();
+    info_name.push(".trashinfo");
+    let info = trash.join("info").join(info_name);
+    if !fsutil::is_protected(&info) { let _ = std::fs::remove_file(info); }
 }
 
 /// Live progress of a `run_tracked` call, readable from the UI thread.
@@ -135,9 +156,30 @@ pub fn run_tracked(items: impl IntoIterator<Item = (PathBuf, u64, Method)>, prog
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn emptying_trash_removes_only_the_matching_metadata() {
+        let trash = fsutil::home().join(".local/share/Trash");
+        let files = trash.join("files");
+        let info = trash.join("info");
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::create_dir_all(&info).unwrap();
+        let name = format!("prunemymac-test-{}", std::process::id());
+        let file = files.join(&name);
+        let metadata = info.join(format!("{name}.trashinfo"));
+        std::fs::write(&file, b"test").unwrap();
+        std::fs::write(&metadata, b"test").unwrap();
+        remove(&file, Method::Delete).unwrap();
+        assert!(!file.exists());
+        assert!(!metadata.exists());
+    }
+
     #[test]
     fn tracked_delete_reports_every_file() {
+        #[cfg(target_os = "macos")]
         let dir = std::env::temp_dir().join(format!("macscrap-clean-{}", std::process::id()));
+        #[cfg(target_os = "linux")]
+        let dir = fsutil::home().join(format!(".prunemymac-clean-test-{}", std::process::id()));
         for i in 0..20 {
             let sub = dir.join(format!("d{}", i % 4));
             std::fs::create_dir_all(&sub).unwrap();

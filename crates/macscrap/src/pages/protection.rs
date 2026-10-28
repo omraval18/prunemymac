@@ -7,7 +7,7 @@ use gpui::{Context, FontWeight, SharedString};
 use macscrap_core::clean::Method;
 use macscrap_core::malware::Severity;
 
-const CLAMAV_INSTALL: &str = "brew install clamav && freshclam";
+const CLAMAV_INSTALL: &str = if cfg!(target_os = "linux") { "sudo apt install clamav" } else { "brew install clamav && freshclam" };
 
 impl MacScrap {
     pub fn render_protection(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -21,7 +21,7 @@ impl MacScrap {
             button("pr-scan-h", Kind::Secondary, Some(if self.protection.done().is_some() { "refresh" } else { "scan" }), if self.protection.done().is_some() { "Scan Again" } else { "Scan" })
                 .on_click(cx.listener(|this, _, _, cx| this.start_protection_scan(cx)))
         };
-        let head = header("Protection", "Checks the places malware hides using Apple's XProtect signatures.", actions);
+        let head = header("Protection", if cfg!(target_os = "linux") { "Scan for threats using your YARA rules and ClamAV." } else { "Checks the places malware hides using Apple's XProtect signatures." }, actions);
 
         if self.protection.is_running() {
             return page(head, None, scanning_view("Scanning for malware", running_detail(self.protection.progress(), "files checked"), None), None);
@@ -118,10 +118,16 @@ impl MacScrap {
                 format!("{} {} found", r.malicious(), if r.malicious() == 1 { "threat" } else { "threats" }),
                 "Review the findings below and remove anything you don't recognize.".to_string(),
             ),
+            Some(r) if r.threats.iter().any(|t| t.severity == Severity::Suspicious) => (
+                "alert", pl.orange, "Findings need review".to_string(),
+                "Review the findings below; a match is not proof of malware.".to_string(),
+            ),
+            Some(r) if r.error.is_some() => ("alert", pl.orange, "Scan incomplete".to_string(),
+                r.error.clone().unwrap_or_default()),
             Some(r) => (
                 "shield-check",
                 pl.green,
-                "Your Mac is protected".to_string(),
+                "No threats found".to_string(),
                 if r.clamav {
                     "ClamAV deep scan found nothing harmful.".to_string()
                 } else {
@@ -174,8 +180,10 @@ impl MacScrap {
                 )
         };
         grouped(vec![
-            engine_row("eng-xp", "shield-check", pl.green, "Apple XProtect signatures", "Read from macOS and updated automatically with system updates. Matched with the YARA-X engine.")
-                .child(pill("Active", pl.green))
+            engine_row("eng-xp", "shield-check", if cfg!(target_os = "linux") { pl.text2 } else { pl.green },
+                if cfg!(target_os = "linux") { "Linux signatures" } else { "Apple XProtect signatures" },
+                if cfg!(target_os = "linux") { "A small set of known-family YARA rules is bundled. Add rules or use ClamAV for broader coverage." } else { "Read from macOS and updated automatically with system updates. Matched with the YARA-X engine." })
+                .child(pill(if cfg!(target_os = "linux") { "Limited" } else { "Active" }, if cfg!(target_os = "linux") { pl.text2 } else { pl.green }))
                 .into_any_element(),
             engine_row("eng-yara", "code", pl.indigo, "Your YARA rules", "Add .yar files to use community rules such as YARA-Forge or Elastic.")
                 .child(button("open-yara", Kind::Secondary, Some("folder"), "Open Folder").on_click(|_, _, _| {
@@ -189,7 +197,7 @@ impl MacScrap {
                     .child(button("clam", Kind::Secondary, Some("scan"), "Deep Scan").on_click(cx.listener(|this, _, _, cx| this.start_clamav_scan(cx))))
                     .into_any_element()
             } else {
-                engine_row("eng-clam", "scan", pl.text3, "ClamAV deep scan", "Optional. Install it with Homebrew to enable a deeper scan.")
+                engine_row("eng-clam", "scan", pl.text3, "ClamAV deep scan", if cfg!(target_os = "linux") { "Optional. Install ClamAV with your distribution's package manager and update its signatures." } else { "Optional. Install it with Homebrew to enable a deeper scan." })
                     .child(
                         div()
                             .id("copy-clam")
@@ -204,7 +212,7 @@ impl MacScrap {
                             .border_color(c(pl.border))
                             .cursor_pointer()
                             .hover(|s| s.border_color(c(pl.border_strong)))
-                            .child(text(CAPTION, pl.text2).font_family("Menlo").child(CLAMAV_INSTALL))
+                            .child(text(CAPTION, pl.text2).font_family(if cfg!(target_os = "linux") { "monospace" } else { "Menlo" }).child(CLAMAV_INSTALL))
                             .child(icon("clipboard", pl.text3, 13.))
                             .on_click(cx.listener(|this, _, _, cx| this.copy(CLAMAV_INSTALL, cx))),
                     )

@@ -249,6 +249,10 @@ pub struct MacScrap {
     network_ports_last_refresh: Option<Instant>,
     pub port_confirm: Option<Port>,
     pub port_stop_pending: bool,
+    #[cfg(target_os = "linux")]
+    pub flatpak_confirm: Option<AppInfo>,
+    #[cfg(target_os = "linux")]
+    pub flatpak_uninstall_pending: bool,
 
     pub protection: Job<Threats>,
     pub last_protection_scan: Option<Instant>,
@@ -325,6 +329,10 @@ impl MacScrap {
             network_ports_last_refresh: None,
             port_confirm: None,
             port_stop_pending: false,
+            #[cfg(target_os = "linux")]
+            flatpak_confirm: None,
+            #[cfg(target_os = "linux")]
+            flatpak_uninstall_pending: false,
             protection: Job::Idle,
             last_protection_scan: None,
             confirm: None,
@@ -344,7 +352,7 @@ impl MacScrap {
             if since.elapsed() > Duration::from_secs(30) && quiet {
                 self.last_hot_notice = Some(Instant::now());
                 notify(&format!(
-                    "Your Mac is running hot ({:.0}°C). Open prunemymac → Performance to see what's using the CPU.",
+                    "Your computer is running hot ({:.0}°C). Open prunemymac → Performance to see what's using the CPU.",
                     snap.cpu_temp.unwrap_or_default()
                 ));
             }
@@ -375,10 +383,10 @@ impl MacScrap {
         let pl = p();
         let mut out = vec![];
         if let (Some(t), Level::Critical) = (s.cpu_temp, s.temp_level()) {
-            out.push((format!("Your Mac is running hot at {t:.0}°C. Check Performance for apps using a lot of CPU."), pl.red));
+            out.push((format!("Your computer is running hot at {t:.0}°C. Check Performance for apps using a lot of CPU."), pl.red));
         }
         if s.mem_level() == Level::Critical {
-            out.push((format!("Memory pressure is high ({}%). Quitting unused apps will help.", s.mem_pressure), pl.orange));
+            out.push((format!("Memory pressure is high ({}%). Quitting unused apps will help.", s.mem_pressure.unwrap_or(0)), pl.orange));
         }
         if s.disk_level() != Level::Good {
             out.push((format!("Only {} free on your startup disk. Run Cleanup to free space.", human_bytes(s.disk_free)), pl.orange));
@@ -469,6 +477,33 @@ impl MacScrap {
                     Err(error) => this.show_toast(error, false),
                 }
                 this.refresh_ports(cx);
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn uninstall_flatpak(&mut self, cx: &mut Context<Self>) {
+        let Some(app) = self.flatpak_confirm.take() else { return };
+        if self.flatpak_uninstall_pending { return; }
+        self.flatpak_uninstall_pending = true;
+        let name = app.name.clone();
+        let task = cx.background_executor().spawn(async move { macscrap_core::apps::uninstall_user_flatpak(&app) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.flatpak_uninstall_pending = false;
+                match result {
+                    Ok(()) => {
+                        this.show_toast(format!("Uninstalled {name}; user data was kept"), true);
+                        this.selected_app = None;
+                        this.leftovers = Job::Idle;
+                        this.leftovers_selected.clear();
+                        this.load_apps(cx);
+                    }
+                    Err(error) => this.show_toast(format!("Could not uninstall {name}: {error}"), false),
+                }
                 cx.notify();
             }).ok();
         }).detach();
@@ -797,7 +832,7 @@ impl MacScrap {
             .flex_col()
             .gap(px(7.))
             .child(row("disk", format!("{} free", human_bytes(s.disk_free)), level_text(s.disk_level())))
-            .child(row("memory", format!("{}% memory pressure", s.mem_pressure), level_text(s.mem_level())))
+            .child(row("memory", s.mem_pressure.map(|p| format!("{p}% memory pressure")).unwrap_or_else(|| "Memory pressure unavailable".into()), level_text(s.mem_level())))
             .child(row(
                 "thermometer",
                 match s.cpu_temp {
@@ -834,6 +869,11 @@ impl MacScrap {
 
     fn on_key(&mut self, e: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = e.keystroke.key.as_str();
+        #[cfg(target_os = "linux")]
+        if self.flatpak_confirm.is_some() {
+            if key == "escape" { self.flatpak_confirm = None; cx.notify(); }
+            return;
+        }
         if self.port_confirm.is_some() {
             if key == "escape" { self.port_confirm = None; } else { return; }
         } else if self.confirm.is_some() {
@@ -919,22 +959,38 @@ fn level_text(level: Level) -> u32 {
 }
 
 pub fn notify(message: &str) {
+    #[cfg(target_os = "linux")]
+    { macscrap_core::sys::spawn_detached(Command::new("notify-send").args(["prunemymac", message])); }
+    #[cfg(target_os = "macos")]
+    {
     let script = format!("display notification \"{}\" with title \"prunemymac\"", message.replace('"', "'"));
     macscrap_core::sys::spawn_detached(Command::new("/usr/bin/osascript").args(["-e", &script]));
+    }
 }
 
 pub fn reveal(path: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    { macscrap_core::sys::spawn_detached(Command::new("xdg-open").arg(if path.is_dir() { path } else { path.parent().unwrap_or(path) })); }
+    #[cfg(target_os = "macos")]
     macscrap_core::sys::spawn_detached(Command::new("/usr/bin/open").arg("-R").arg(path));
 }
 
 pub fn open_path(path: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    macscrap_core::sys::spawn_detached(Command::new("xdg-open").arg(path));
+    #[cfg(target_os = "macos")]
     macscrap_core::sys::spawn_detached(Command::new("/usr/bin/open").arg(path));
 }
 
 /// Run a shell command as root after the standard macOS admin password prompt.
 pub fn run_as_admin(shell: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let out = Command::new("pkexec").args(["/bin/sh", "-c", shell]).output().map_err(|e| format!("Could not start administrator authorization: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let out = {
     let script = format!("do shell script \"{}\" with administrator privileges", shell.replace('"', "\\\""));
-    let out = Command::new("/usr/bin/osascript").args(["-e", &script]).output().map_err(|e| e.to_string())?;
+    Command::new("/usr/bin/osascript").args(["-e", &script]).output().map_err(|e| e.to_string())?
+    };
     if out.status.success() {
         Ok(())
     } else {

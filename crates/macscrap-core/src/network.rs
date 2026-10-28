@@ -31,7 +31,7 @@ pub struct Port {
 
 /// Listening TCP ports and bound UDP sockets visible to the current user.
 pub fn ports() -> Result<Vec<Port>, String> {
-    let output = Command::new("/usr/sbin/lsof")
+    let output = Command::new(if cfg!(target_os = "linux") { "lsof" } else { "/usr/sbin/lsof" })
         .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-iUDP", "-FpcuPn"])
         .output().map_err(|e| format!("Could not read ports: {e}"))?;
     if !output.status.success() && !(output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty()) {
@@ -90,6 +90,7 @@ fn port_lock_reason(pid: u32, same_user: bool, number: u16, started: u64, execut
 
 /// Refuse anything except a verified, non-Apple application executable.
 /// A valid signature alone never implies that stopping an app is harmless.
+#[cfg(target_os = "macos")]
 pub(crate) fn verified_third_party_app(executable: &Path) -> bool {
     let Ok(executable) = executable.canonicalize() else { return false };
     let Some(bundle) = crate::background::app_bundle(&executable) else { return false };
@@ -107,6 +108,47 @@ pub(crate) fn verified_third_party_app(executable: &Path) -> bool {
     text.lines().find_map(|line| line.strip_prefix("Authority="))
         .is_some_and(|authority| authority.starts_with("Developer ID Application:") || authority.starts_with("Apple Distribution:"))
         && text.lines().any(|line| line.starts_with("TeamIdentifier=") && line != "TeamIdentifier=not set")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn verified_third_party_app(executable: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(executable) = executable.canonicalize() else { return false };
+    let Ok(home) = crate::fsutil::home().canonicalize() else { return false };
+    let Ok(meta) = std::fs::metadata(&executable) else { return false };
+    let uid = unsafe { libc::getuid() };
+    if uid == 0 || !meta.is_file() { return false; }
+    if executable.starts_with(&home) && meta.uid() == uid { return true; }
+    if meta.uid() != 0 || !(executable.starts_with("/usr") || executable.starts_with("/opt")) { return false; }
+    let Some(package) = linux_desktop_packages().get(&executable).cloned() else { return false };
+    // Confirm the executable belongs to the same installed package as the
+    // desktop entry. Essential and required system packages stay protected.
+    let Ok(owner) = Command::new("dpkg-query").args(["--search", "--"]).arg(&executable).output() else { return false };
+    if !owner.status.success() { return false; }
+    let owner_text = String::from_utf8_lossy(&owner.stdout);
+    let owns_executable = owner_text.lines().filter_map(|line| line.rsplit_once(": "))
+        .any(|(name, path)| name.split(':').next() == Some(package.as_str()) && Path::new(path) == executable);
+    if !owns_executable { return false; }
+    let Ok(status) = Command::new("dpkg-query").args(["-W", "-f=${db:Status-Status}\t${Essential}\t${Priority}", "--", &package]).output() else { return false };
+    if !status.status.success() { return false; }
+    let text = String::from_utf8_lossy(&status.stdout);
+    let fields: Vec<_> = text.trim_end().split('\t').collect();
+    fields.len() == 3 && fields[0] == "installed" && fields[1] != "yes" && matches!(fields[2], "optional" | "extra")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_desktop_packages() -> HashMap<PathBuf, String> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, HashMap<PathBuf, String>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(cache) = cache.lock() {
+        if let Some((at, entries)) = &*cache {
+            if at.elapsed() < Duration::from_secs(60) { return entries.clone(); }
+        }
+    }
+    let entries: HashMap<_, _> = crate::apps::list(&crate::Cancel::new()).into_iter()
+        .filter_map(|app| Some((app.executable?, app.package?))).collect();
+    if let Ok(mut cache) = cache.lock() { *cache = Some((Instant::now(), entries.clone())); }
+    entries
 }
 
 /// Recheck identity, ownership, signature and port immediately before SIGTERM.
@@ -173,7 +215,7 @@ fn parse_ports(output: &str) -> Vec<Port> {
 /// Snapshot only: short-lived connections and processes owned by other users
 /// can be absent. Socket direction and HTTP request details are not available.
 pub fn connections() -> Result<Vec<Connection>, String> {
-    let output = Command::new("/usr/sbin/lsof")
+    let output = Command::new(if cfg!(target_os = "linux") { "lsof" } else { "/usr/sbin/lsof" })
         .args(["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fpcn"])
         .output()
         .map_err(|e| format!("Could not read connections: {e}"))?;

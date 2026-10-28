@@ -1,10 +1,18 @@
 //! Things running in the background: launchd agents/daemons (persistent) and
 //! the heaviest live processes (right now).
 
+#[cfg(target_os = "macos")]
 use crate::fsutil;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+#[cfg(target_os = "linux")]
+#[path = "background_linux.rs"]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::{disable, launch_items};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -15,6 +23,9 @@ pub enum Scope {
 
 impl Scope {
     pub fn label(self) -> &'static str {
+        #[cfg(target_os = "linux")]
+        { return match self { Scope::UserAgent => "User Startup", Scope::GlobalAgent => "System Startup", Scope::GlobalDaemon => "System Service" }; }
+        #[cfg(target_os = "macos")]
         match self {
             Scope::UserAgent => "User Agent",
             Scope::GlobalAgent => "Global Agent",
@@ -43,6 +54,7 @@ impl LaunchItem {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn launch_items() -> Vec<LaunchItem> {
     let loaded = loaded_labels();
     let dirs = [
@@ -70,6 +82,7 @@ pub fn launch_items() -> Vec<LaunchItem> {
     items
 }
 
+#[cfg(target_os = "macos")]
 fn parse_launch_plist(path: &Path, scope: Scope) -> Option<LaunchItem> {
     let value = plist::Value::from_file(path).ok()?;
     let dict = value.as_dictionary()?;
@@ -99,6 +112,7 @@ fn parse_launch_plist(path: &Path, scope: Scope) -> Option<LaunchItem> {
     })
 }
 
+#[cfg(target_os = "macos")]
 fn loaded_labels() -> Vec<String> {
     let Ok(out) = Command::new("/bin/launchctl").arg("list").output() else {
         return vec![];
@@ -112,6 +126,7 @@ fn loaded_labels() -> Vec<String> {
 
 /// Leaf signing authority ("Developer ID Application: Foo (TEAMID)"), or None
 /// when unsigned / ad-hoc / missing.
+#[cfg(target_os = "macos")]
 pub fn code_signer(path: &Path) -> Option<String> {
     if !path.exists() {
         return None;
@@ -125,6 +140,7 @@ pub fn code_signer(path: &Path) -> Option<String> {
 
 /// Stop a user agent now and keep it from starting again by moving its plist
 /// to the Trash. System-wide items need admin rights and are left to the user.
+#[cfg(target_os = "macos")]
 pub fn disable(item: &LaunchItem) -> Result<(), String> {
     if item.scope != Scope::UserAgent {
         return Err("System-wide items need administrator rights. Remove the plist from Finder.".into());
@@ -144,12 +160,14 @@ pub struct ProcessInfo {
     pub cpu: f32,
     pub memory: u64,
     pub app_bundle: Option<PathBuf>,
+    pub app_name: Option<String>,
     pub executable: Option<PathBuf>,
     pub started: u64,
     pub can_quit: bool,
 }
 
 /// The outermost application bundle owns nested helper apps too.
+#[cfg(target_os = "macos")]
 pub fn app_bundle(executable: &Path) -> Option<PathBuf> {
     executable.ancestors().filter(|path| path.extension().is_some_and(|ext| ext == "app")).last().map(Path::to_path_buf)
 }
@@ -164,6 +182,9 @@ pub fn heavy_processes(limit: usize) -> Vec<ProcessInfo> {
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
     let mut signatures = std::collections::HashMap::<PathBuf, bool>::new();
     let uid = unsafe { libc::getuid() };
+    #[cfg(target_os = "linux")]
+    let app_executables: std::collections::HashMap<PathBuf, (PathBuf, String)> = crate::apps::list(&crate::Cancel::new())
+        .into_iter().filter_map(|app| app.executable.map(|exe| (exe, (app.path, app.name)))).collect();
     let mut procs: Vec<ProcessInfo> = sys
         .processes()
         .values()
@@ -174,12 +195,23 @@ pub fn heavy_processes(limit: usize) -> Vec<ProcessInfo> {
             let can_quit = p.pid().as_u32() != std::process::id() && p.start_time() != 0 && same_user
                 && executable.as_ref().is_some_and(|exe| *signatures.entry(exe.clone())
                     .or_insert_with(|| crate::network::cached_verified_third_party_app(exe)));
+            #[cfg(target_os = "macos")]
+            let (app_bundle, app_name) = {
+                let bundle = p.exe().and_then(app_bundle);
+                let name = bundle.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned());
+                (bundle, name)
+            };
+            #[cfg(target_os = "linux")]
+            let (app_bundle, app_name) = executable.as_ref().and_then(|p| p.canonicalize().ok())
+                .and_then(|exe| app_executables.get(&exe).cloned())
+                .map(|(path, name)| (Some(path), Some(name))).unwrap_or((None, None));
             ProcessInfo {
                 pid: p.pid().as_u32(),
                 name: p.name().to_string_lossy().into_owned(),
                 cpu: p.cpu_usage(),
                 memory: p.memory(),
-                app_bundle: p.exe().and_then(app_bundle),
+                app_bundle,
+                app_name,
                 executable,
                 started: p.start_time(),
                 can_quit,
@@ -195,7 +227,7 @@ pub fn quit_process(process: &ProcessInfo) -> Result<(), String> {
     crate::network::stop_verified_app(process.pid, process.started, process.executable.as_deref())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod process_group_tests {
     use super::*;
 

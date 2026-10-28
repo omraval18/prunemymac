@@ -13,8 +13,10 @@ struct Task {
     title: &'static str,
     description: &'static str,
     command: &'static str,
+    admin: bool,
 }
 
+#[cfg(target_os = "macos")]
 const TASKS: [Task; 4] = [
     Task {
         id: "ram",
@@ -22,6 +24,7 @@ const TASKS: [Task; 4] = [
         title: "Free Up RAM",
         description: "Clears inactive memory so apps you open next have room. Useful when memory pressure is high.",
         command: "purge",
+        admin: true,
     },
     Task {
         id: "dns",
@@ -29,6 +32,7 @@ const TASKS: [Task; 4] = [
         title: "Flush DNS Cache",
         description: "Fixes websites that won't load or point to an old address after a network change.",
         command: "dscacheutil -flushcache; killall -HUP mDNSResponder",
+        admin: true,
     },
     Task {
         id: "spotlight",
@@ -36,6 +40,7 @@ const TASKS: [Task; 4] = [
         title: "Reindex Spotlight",
         description: "Rebuilds the search index when Spotlight misses files. Search is slower for a while afterwards.",
         command: "mdutil -E /",
+        admin: true,
     },
     Task {
         id: "snapshots",
@@ -43,8 +48,23 @@ const TASKS: [Task; 4] = [
         title: "Thin Time Machine Snapshots",
         description: "Removes local snapshots that hold on to deleted files. Your backups on external drives are untouched.",
         command: "tmutil thinlocalsnapshots / 999999999999 4",
+        admin: true,
     },
 ];
+
+#[cfg(target_os = "linux")]
+const TASKS: [Task; 4] = [
+    Task { id: "dns", icon: "globe", title: "Flush DNS Cache", description: "Flush the systemd-resolved DNS cache, when available.", command: "resolvectl flush-caches", admin: true },
+    Task { id: "packages", icon: "archive", title: "Clean APT Package Cache", description: "Remove downloaded APT package archives; packages can be downloaded again.", command: "apt-get clean", admin: true },
+    Task { id: "fonts", icon: "refresh", title: "Refresh Font Cache", description: "Rebuild font caches for your user account.", command: "fc-cache -f", admin: false },
+    Task { id: "desktop", icon: "grid", title: "Refresh App Database", description: "Refresh the desktop application database for your user account.", command: "mkdir -p \"${XDG_DATA_HOME:-$HOME/.local/share}/applications\" && update-desktop-database \"${XDG_DATA_HOME:-$HOME/.local/share}/applications\"", admin: false },
+];
+
+fn run_task(command: &str, admin: bool) -> Result<(), String> {
+    if admin { return run_as_admin(command); }
+    let out = std::process::Command::new("/bin/sh").args(["-c", command]).output().map_err(|e| e.to_string())?;
+    if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+}
 
 impl MacScrap {
     pub fn render_performance(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -56,7 +76,7 @@ impl MacScrap {
         }));
         let head = header(
             "Performance",
-            "See what's working your Mac hardest and control what starts automatically.",
+            if cfg!(target_os = "linux") { "See what's working your computer hardest and control what starts automatically." } else { "See what's working your Mac hardest and control what starts automatically." },
             div()
                 .flex()
                 .items_center()
@@ -89,7 +109,7 @@ impl MacScrap {
             b_cpu.total_cmp(&a_cpu)
         });
         let sections: Vec<AnyElement> = groups.into_iter().enumerate().map(|(group_ix, (bundle, procs))| {
-            let name = bundle.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned())
+            let name = procs.first().and_then(|p| p.app_name.clone()).or_else(|| bundle.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()))
                 .unwrap_or_else(|| "Other processes".into());
             let cpu: f32 = procs.iter().map(|p| p.cpu).sum();
             let memory: u64 = procs.iter().map(|p| p.memory).sum();
@@ -158,7 +178,11 @@ impl MacScrap {
         }).collect();
         scroll_body("procs")
             .gap(px(14.))
-            .child(note("info", "Expand an app to see its processes. Only verified third-party app processes can be quit; quitting can lose unsaved work."))
+            .child(note("info", if cfg!(target_os = "linux") {
+                "Expand an app to see its processes. System and unrecognized programs are protected; quitting can lose unsaved work."
+            } else {
+                "Expand an app to see its processes. Only verified third-party app processes can be quit; quitting can lose unsaved work."
+            }))
             .children(sections)
             .into_any_element()
     }
@@ -171,7 +195,7 @@ impl MacScrap {
         let gen = *gen;
         let items: Vec<_> = items.iter().filter(|i| !i.is_apple()).cloned().collect();
         if items.is_empty() {
-            return empty_view("check-circle", pl.green, "No third-party startup items", "Nothing besides macOS starts automatically.", None).into_any_element();
+            return empty_view("check-circle", pl.green, "No third-party startup items", if cfg!(target_os = "linux") { "No startup entries were found." } else { "Nothing besides macOS starts automatically." }, None).into_any_element();
         }
         let rows: Vec<AnyElement> = items
             .into_iter()
@@ -180,7 +204,7 @@ impl MacScrap {
                 let user = item.scope == Scope::UserAgent;
                 let (tile_color, tile) = if item.broken {
                     (pl.red, "alert")
-                } else if item.signer.is_none() && item.program.is_some() {
+                } else if cfg!(target_os = "macos") && item.signer.is_none() && item.program.is_some() {
                     (pl.orange, "power")
                 } else {
                     (pl.text2, "power")
@@ -206,7 +230,7 @@ impl MacScrap {
                                 .child(text(CAPTION, pl.text3).truncate().child(detail)),
                         )
                         .when(item.broken, |d| d.child(pill("Broken", pl.red)))
-                        .when(!item.broken && item.signer.is_none() && item.program.is_some(), |d| d.child(pill("Unsigned", pl.orange)))
+                        .when(cfg!(target_os = "macos") && !item.broken && item.signer.is_none() && item.program.is_some(), |d| d.child(pill("Unsigned", pl.orange)))
                         .when(item.loaded, |d| d.child(pill("Running", pl.green)))
                         .child(pill(item.scope.label(), pl.text2))
                         .child(icon_button(SharedString::from(format!("lirv-{ix}")), "folder").on_click(move |_, _, _| reveal(&plist)))
@@ -230,7 +254,7 @@ impl MacScrap {
             .collect();
         scroll_body("startup")
             .gap(px(10.))
-            .child(note("info", "Removing a user item stops it now and on next login. System items (lock icon) need an administrator."))
+            .child(note("info", if cfg!(target_os = "linux") { "Removing an autostart entry prevents it starting next login. User services are also stopped; system items are protected." } else { "Removing a user item stops it now and on next login. System items (lock icon) need an administrator." }))
             .child(grouped(rows))
             .into_any_element()
     }
@@ -241,7 +265,7 @@ impl MacScrap {
             .iter()
             .map(|t| {
                 let running = self.maintenance_running == Some(t.id);
-                let (id, title, cmd) = (t.id, t.title, t.command);
+                let (id, title, cmd, admin) = (t.id, t.title, t.command, t.admin);
                 list_row(SharedString::from(format!("m-{id}")))
                     .py(px(10.))
                     .child(tile_icon(t.icon, pl.accent, 34.))
@@ -258,13 +282,13 @@ impl MacScrap {
                     .child(if running {
                         div().w(px(72.)).flex().justify_center().child(spinner(16., pl.accent)).into_any_element()
                     } else {
-                        button(SharedString::from(format!("run-{id}")), Kind::Secondary, Some("lock"), "Run")
+                        button(SharedString::from(format!("run-{id}")), Kind::Secondary, if admin { Some("lock") } else { None }, "Run")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if this.maintenance_running.is_some() {
                                     return;
                                 }
                                 this.maintenance_running = Some(id);
-                                let task = cx.background_executor().spawn(async move { run_as_admin(cmd) });
+                                let task = cx.background_executor().spawn(async move { run_task(cmd, admin) });
                                 cx.spawn(async move |this, cx| {
                                     let r = task.await;
                                     this.update(cx, |this, cx| {
@@ -288,7 +312,7 @@ impl MacScrap {
             .collect();
         scroll_body("maint")
             .gap(px(10.))
-            .child(note("lock", "Each task asks for your administrator password through the standard macOS prompt."))
+            .child(note("lock", if cfg!(target_os = "linux") { "Tasks marked with a lock request administrator authorization through PolicyKit." } else { "Each task asks for your administrator password through the standard macOS prompt." }))
             .child(grouped(rows))
             .into_any_element()
     }

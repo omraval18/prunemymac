@@ -1,5 +1,9 @@
 //! macscrap engine: scanners and cleaners with no UI dependency.
 
+#[cfg(target_os = "macos")]
+pub mod apps;
+#[cfg(target_os = "linux")]
+#[path = "apps_linux.rs"]
 pub mod apps;
 pub mod background;
 pub mod clean;

@@ -8,7 +8,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+#[cfg(target_os = "macos")]
 const BUILTIN_RULES: &str = include_str!("../../../rules/junk.toml");
+#[cfg(target_os = "linux")]
+const BUILTIN_RULES: &str = include_str!("../../../rules/junk-linux.toml");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,6 +54,9 @@ struct RuleFile {
 }
 
 pub fn user_rules_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    { return std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| fsutil::home().join(".config")).join("prunemymac/rules.toml"); }
+    #[cfg(target_os = "macos")]
     fsutil::home().join("Library/Application Support/prunemymac/rules.toml")
 }
 

@@ -2,6 +2,7 @@
 //! network throughput. `Monitor::sample` is cheap enough to call every 2s.
 
 use std::ffi::CString;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use std::time::Instant;
 use sysinfo::{Components, CpuRefreshKind, MemoryRefreshKind, Networks, RefreshKind, System};
@@ -24,7 +25,7 @@ pub struct Snapshot {
     pub mem_used: u64,
     pub mem_total: u64,
     /// 0–100; mirrors Activity Monitor's memory pressure.
-    pub mem_pressure: u8,
+    pub mem_pressure: Option<u8>,
     pub swap_used: u64,
     pub disk_total: u64,
     pub disk_free: u64,
@@ -51,8 +52,8 @@ impl Snapshot {
     }
     pub fn mem_level(&self) -> Level {
         match self.mem_pressure {
-            p if p >= 80 => Level::Critical,
-            p if p >= 50 => Level::Warn,
+            Some(p) if p >= 80 => Level::Critical,
+            Some(p) if p >= 50 => Level::Warn,
             _ => Level::Good,
         }
     }
@@ -110,7 +111,7 @@ impl Monitor {
             networks: Networks::new_with_refreshed_list(),
             last_net: Instant::now(),
             last_battery: None,
-            model: sysctl_string("hw.model").unwrap_or_else(|| "Mac".into()),
+            model: sysctl_string("hw.model").unwrap_or_else(|| if cfg!(target_os = "linux") { "Linux" } else { "Mac" }.into()),
         }
     }
 
@@ -193,6 +194,7 @@ fn cpu_sensor_indices(components: &Components) -> Vec<usize> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn sysctl_u32(name: &str) -> Option<u32> {
     let cname = CString::new(name).ok()?;
     let mut value: u32 = 0;
@@ -203,6 +205,7 @@ fn sysctl_u32(name: &str) -> Option<u32> {
     (rc == 0).then_some(value)
 }
 
+#[cfg(target_os = "macos")]
 fn sysctl_string(name: &str) -> Option<String> {
     let cname = CString::new(name).ok()?;
     let mut buf = [0u8; 256];
@@ -215,8 +218,9 @@ fn sysctl_string(name: &str) -> Option<String> {
 
 /// `kern.memorystatus_level` is the % of memory available to the system;
 /// pressure is its complement.
-fn memory_pressure() -> u8 {
-    sysctl_u32("kern.memorystatus_level").map(|free| 100u32.saturating_sub(free) as u8).unwrap_or(0)
+#[cfg(target_os = "macos")]
+fn memory_pressure() -> Option<u8> {
+    sysctl_u32("kern.memorystatus_level").map(|free| 100u32.saturating_sub(free) as u8)
 }
 
 fn statfs(path: &str) -> Option<(u64, u64)> {
@@ -229,12 +233,44 @@ fn statfs(path: &str) -> Option<(u64, u64)> {
     Some((st.f_blocks * bs, st.f_bavail * bs))
 }
 
+#[cfg(target_os = "macos")]
 fn read_battery() -> Option<Battery> {
     let out = Command::new("/usr/bin/pmset").args(["-g", "batt"]).output().ok()?;
     parse_pmset(&String::from_utf8_lossy(&out.stdout))
 }
 
+#[cfg(target_os = "linux")]
+fn sysctl_string(_: &str) -> Option<String> {
+    std::fs::read_to_string("/sys/devices/virtual/dmi/id/product_name").ok()
+        .map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
+}
+
+#[cfg(target_os = "linux")]
+fn memory_pressure() -> Option<u8> {
+    // Linux PSI reports the percentage of time tasks were stalled by memory.
+    std::fs::read_to_string("/proc/pressure/memory").ok()
+        .and_then(|s| s.lines().find(|line| line.starts_with("some "))
+            .and_then(|line| line.split_whitespace().find_map(|v| v.strip_prefix("avg10=")))
+            .and_then(|v| v.parse::<f32>().ok()))
+        .map(|v| v.clamp(0.0, 100.0) as u8)
+}
+
+#[cfg(target_os = "linux")]
+fn read_battery() -> Option<Battery> {
+    let supplies = std::fs::read_dir("/sys/class/power_supply").ok()?;
+    for entry in supplies.flatten() {
+        let path = entry.path();
+        let read = |name: &str| std::fs::read_to_string(path.join(name)).ok().map(|s| s.trim().to_owned());
+        if read("type").as_deref() != Some("Battery") { continue; }
+        let percent = read("capacity")?.parse::<u8>().ok()?.min(100);
+        let charging = matches!(read("status").as_deref(), Some("Charging" | "Full"));
+        return Some(Battery { percent, charging, remaining: None });
+    }
+    None
+}
+
 /// Parses e.g. ` -InternalBattery-0 (id=123)	86%; discharging; 4:11 remaining present: true`
+#[cfg(any(target_os = "macos", test))]
 fn parse_pmset(text: &str) -> Option<Battery> {
     let line = text.lines().find(|l| l.contains("InternalBattery"))?;
     let after = line.split('\t').nth(1)?;
