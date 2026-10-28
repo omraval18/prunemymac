@@ -221,7 +221,7 @@ impl MacScrap {
                             cx.notify();
                         }))
                         .child(checkbox(checked))
-                        .child(text(CAPTION, pl.text2).flex_1().min_w_0().truncate().child(parent_display(&f.path)))
+                        .child(text(CAPTION, pl.text2).flex_1().min_w_0().truncate().child(format!("{} — {}", file_name(&f.path), parent_display(&f.path))))
                         .child(text(CAPTION, pl.text3).child(format!("Modified {}", ago(f.modified))))
                         .child(div().w(px(52.)).flex().justify_end().when(!checked, |d| d.child(pill("Keep", pl.green))))
                         .child(icon_button(SharedString::from(format!("drv-{si}-{fi}")), "folder").on_click(move |_, _, cx| {
