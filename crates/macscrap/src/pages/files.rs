@@ -48,7 +48,7 @@ impl MacScrap {
             return page(head, None, empty_view("file", pl.indigo, "Find what's taking up space", "Videos, archives and disk images add up quickly. You choose what to move to the Trash.", Some(scan)), None);
         }
 
-        let thresholds = [(100_000_000u64, "100 MB"), (500_000_000, "500 MB"), (1_000_000_000, "1 GB")];
+        let thresholds = [(macscrap_core::files::LARGE_FILE_MIN, "100 MB"), (500_000_000, "500 MB"), (1_000_000_000, "1 GB")];
         let toolbar = div()
             .flex()
             .items_center()
@@ -167,7 +167,7 @@ impl MacScrap {
             button("dp-rescan", Kind::Secondary, Some(if self.dupes.done().is_some() { "refresh" } else { "scan" }), if self.dupes.done().is_some() { "Rescan" } else { "Scan" })
                 .on_click(cx.listener(|this, _, _, cx| this.start_dupes_scan(cx)))
         };
-        let head = header("Duplicates", "Identical copies of the same file. The oldest copy is kept unless you choose otherwise.", actions);
+        let head = header("Duplicates", "Identical files may be needed by different apps. Review each path before selecting files to remove.", actions);
 
         if self.dupes.is_running() {
             return page(head, None, scanning_view("Comparing files", running_detail(self.dupes.progress(), "files checked"), None), None);
@@ -221,7 +221,7 @@ impl MacScrap {
                             cx.notify();
                         }))
                         .child(checkbox(checked))
-                        .child(text(CAPTION, pl.text2).flex_1().min_w_0().truncate().child(parent_display(&f.path)))
+                        .child(text(CAPTION, pl.text2).flex_1().min_w_0().truncate().child(format!("{} — {}", file_name(&f.path), parent_display(&f.path))))
                         .child(text(CAPTION, pl.text3).child(format!("Modified {}", ago(f.modified))))
                         .child(div().w(px(52.)).flex().justify_end().when(!checked, |d| d.child(pill("Keep", pl.green))))
                         .child(icon_button(SharedString::from(format!("drv-{si}-{fi}")), "folder").on_click(move |_, _, cx| {
@@ -252,9 +252,8 @@ impl MacScrap {
             div()
                 .flex()
                 .gap(px(8.))
-                .child(button("dp-reset", Kind::Ghost, None, "Keep Oldest").on_click(cx.listener(|this, _, _, cx| {
-                    this.dupes_selected =
-                        this.dupes.done().map(|s| s.iter().flat_map(|set| set.files.iter().skip(1).map(|f| f.path.clone())).collect()).unwrap_or_default();
+                .child(button("dp-reset", Kind::Ghost, None, "Deselect All").on_click(cx.listener(|this, _, _, cx| {
+                    this.dupes_selected.clear();
                     cx.notify();
                 })))
                 .child(

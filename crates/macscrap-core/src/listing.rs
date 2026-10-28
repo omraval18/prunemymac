@@ -2,6 +2,7 @@
 //! `getattrlistbulk(2)` call returns names, types and allocated sizes for
 //! many entries at once, instead of one `lstat` per file.
 
+#[cfg(target_os = "macos")]
 use std::ffi::{CStr, CString};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -45,12 +46,16 @@ pub(crate) enum Kind {
     Other,
 }
 
+#[cfg(target_os = "macos")]
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
+#[cfg(target_os = "macos")]
 const VREG: u32 = 1;
+#[cfg(target_os = "macos")]
 const VDIR: u32 = 2;
 
 /// Read one directory with `getattrlistbulk`. Entries are packed as:
 /// length, returned-attrs set, [error], name ref, devid, objtype, [allocsize].
+#[cfg(target_os = "macos")]
 pub(crate) fn read_bulk(path: &Path) -> std::io::Result<Listing> {
     let cpath = CString::new(path.as_os_str().as_bytes())?;
     let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
@@ -82,6 +87,7 @@ pub(crate) fn read_bulk(path: &Path) -> std::io::Result<Listing> {
     BUF.with_borrow_mut(|buf| read_into(fd, &mut attrs, buf))
 }
 
+#[cfg(target_os = "macos")]
 fn read_into(fd: i32, attrs: &mut libc::attrlist, buf: &mut [u8]) -> std::io::Result<Listing> {
     let mut out = Listing::default();
     loop {
@@ -150,19 +156,34 @@ fn read_into(fd: i32, attrs: &mut libc::attrlist, buf: &mut [u8]) -> std::io::Re
     Ok(out)
 }
 
-/// Portable fallback with one `lstat` per entry.
+/// Portable listing. On Linux, trust `d_type` when the kernel provides it so
+/// sockets/fifos/symlinks skip `lstat`; files and dirs still need metadata for
+/// size and device id (same-filesystem checks).
 pub(crate) fn read_std(path: &Path) -> std::io::Result<Listing> {
     let mut out = Listing::default();
     for e in std::fs::read_dir(path)?.flatten() {
+        let name = e.file_name();
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(ft) = e.file_type() {
+                if ft.is_symlink() || (!ft.is_dir() && !ft.is_file()) {
+                    out.push(name.as_bytes(), Kind::Other, 0, 0, 0);
+                    continue;
+                }
+            }
+        }
         let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
         let kind = if m.is_dir() { Kind::Dir } else if m.is_file() { Kind::File } else { Kind::Other };
-        out.push(e.file_name().as_bytes(), kind, m.dev() as i32, m.blocks() * 512, if m.is_file() { m.len() } else { 0 });
+        out.push(name.as_bytes(), kind, m.dev() as i32, m.blocks() * 512, if m.is_file() { m.len() } else { 0 });
     }
     Ok(out)
 }
 
 /// Fast listing with a portable fallback.
 pub(crate) fn read_entries(path: &Path) -> std::io::Result<Listing> {
-    read_bulk(path).or_else(|_| read_std(path))
+    #[cfg(target_os = "macos")]
+    { read_bulk(path).or_else(|_| read_std(path)) }
+    #[cfg(not(target_os = "macos"))]
+    { read_std(path) }
 }
 

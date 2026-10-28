@@ -8,7 +8,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+#[cfg(target_os = "macos")]
 const BUILTIN_RULES: &str = include_str!("../../../rules/junk.toml");
+#[cfg(target_os = "linux")]
+const BUILTIN_RULES: &str = include_str!("../../../rules/junk-linux.toml");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,6 +54,9 @@ struct RuleFile {
 }
 
 pub fn user_rules_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    { return std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| fsutil::home().join(".config")).join("prunemymac/rules.toml"); }
+    #[cfg(target_os = "macos")]
     fsutil::home().join("Library/Application Support/prunemymac/rules.toml")
 }
 
@@ -123,6 +129,7 @@ pub fn scan(rules: &[Rule], cancel: &Cancel, progress: &(dyn Fn(&str) + Sync)) -
             .filter(|p| !excluded.contains(p))
             .filter(|p| !fsutil::is_protected(p))
             .filter(|p| !p.ancestors().any(|a| claimed.contains(a)))
+            .filter(|p| !claimed.iter().any(|existing| existing.starts_with(p)))
             .collect();
         paths.sort();
         paths.dedup();
@@ -146,4 +153,22 @@ pub fn scan(rules: &[Rule], cancel: &Cancel, progress: &(dyn Fn(&str) + Sync)) -
             (!items.is_empty()).then_some(JunkGroup { rule, items })
         })
         .collect()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+    #[test]
+    fn generic_cache_rule_finds_review_only_cache_entries() {
+        let rule = load_rules().unwrap().into_iter().find(|r| r.id == "other-user-caches").unwrap();
+        assert_eq!(rule.safety, Safety::Review);
+        let folder = fsutil::home().join(".cache").join(format!("prunemymac-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("cache"), b"cache data").unwrap();
+        let mut fixture = rule;
+        fixture.paths = vec![folder.to_string_lossy().into_owned()];
+        let found = scan(&[fixture], &Cancel::new(), &|_| {});
+        assert_eq!(found[0].items[0].path, folder);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 }

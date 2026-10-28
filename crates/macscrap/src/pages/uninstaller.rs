@@ -72,7 +72,11 @@ impl MacScrap {
             cx,
             |s| &mut s.leftovers,
             move |cancel, _| macscrap_core::apps::leftovers(&app, &cancel),
-            |s| s.leftovers_selected = s.leftovers.done().map(|l| l.iter().map(|l| l.path.clone()).collect()).unwrap_or_default(),
+            |s| {
+                if cfg!(target_os = "macos") {
+                    s.leftovers_selected = s.leftovers.done().map(|l| l.iter().map(|l| l.path.clone()).collect()).unwrap_or_default();
+                }
+            },
         );
     }
 
@@ -152,13 +156,13 @@ impl MacScrap {
                         .when(!active, |d| d.hover(|s| s.bg(c(pl.hover))))
                         .child(app_icon(&a, 30.))
                         .child(text(BODY, if active { pl.on_accent } else { pl.text }).flex_1().min_w_0().truncate().child(a.name.clone()))
-                        .child(text(CAPTION, if active { pl.on_accent } else { pl.text3 }).child(human_bytes(a.size)))
+                        .child(text(CAPTION, if active { pl.on_accent } else { pl.text3 }).child(if a.size == 0 && cfg!(target_os = "linux") { "—".into() } else { human_bytes(a.size) }))
                         .on_click(cx.listener(move |this, _, _, cx| this.select_app(pick.clone(), cx)))
                 })),
         );
 
         let (detail, footer) = match selected {
-            None => (empty_view("grid", pl.accent, "Select an app", "You'll see the app and every file it created across your Mac.", None).into_any_element(), None),
+            None => (empty_view("grid", pl.accent, "Select an app", if cfg!(target_os = "linux") { "Review its desktop entry and matching user data." } else { "You'll see the app and every file it created across your Mac." }, None).into_any_element(), None),
             Some(app) => self.app_detail(app, cx),
         };
 
@@ -195,7 +199,7 @@ impl MacScrap {
 
         let Some(left) = self.leftovers.done().cloned() else {
             return (
-                div().flex_1().flex().flex_col().child(summary).child(scanning_view("Finding related files", "Checking Library folders".into(), None)).into_any_element(),
+                div().flex_1().flex().flex_col().child(summary).child(scanning_view("Finding related files", if cfg!(target_os = "linux") { "Checking user data folders" } else { "Checking Library folders" }.into(), None)).into_any_element(),
                 None,
             );
         };
@@ -203,7 +207,7 @@ impl MacScrap {
         let gen = self.leftovers.generation();
         let app_path = app.path.clone();
         let mut rows: Vec<AnyElement> = vec![list_row("app-bundle")
-            .child(checkbox(true).opacity(0.5))
+            .child(if cfg!(target_os = "linux") { icon("info", pl.text3, 16.).into_any_element() } else { checkbox(true).opacity(0.5).into_any_element() })
             .child(app_icon(&app, 30.))
             .child(
                 div()
@@ -211,7 +215,7 @@ impl MacScrap {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(text(BODY, pl.text).font_weight(FontWeight::MEDIUM).child(format!("{}.app", app.name)))
+                    .child(text(BODY, pl.text).font_weight(FontWeight::MEDIUM).child(if cfg!(target_os = "linux") { format!("{} desktop entry", app.name) } else { format!("{}.app", app.name) }))
                     .child(text(CAPTION, pl.text3).truncate().child(short_path(&app.path))),
             )
             .child(pill("Application", pl.accent))
@@ -267,12 +271,13 @@ impl MacScrap {
                     .justify_between()
                     .px(px(4.))
                     .pb(px(8.))
-                    .child(section_label("Will be removed"))
-                    .child(text(MICRO, pl.text3).child(format!("{} related items", left.len()))),
+                    .child(section_label(if cfg!(target_os = "linux") { "Application and related files" } else { "Will be removed" }))
+                    .child(text(MICRO, pl.text3).child(if cfg!(target_os = "linux") { format!("{} related items · app size shown separately", left.len()) } else { format!("{} related items", left.len()) })),
             )
             .child(div().id("leftovers").flex_1().min_h_0().overflow_y_scroll().child(grouped(rows)))
             .into_any_element();
 
+        #[cfg(target_os = "macos")]
         let footer = action_bar(
             div()
                 .flex()
@@ -297,6 +302,38 @@ impl MacScrap {
                     this.leftovers = crate::app::Job::Idle;
                 }, cx);
             })),
+        );
+        #[cfg(target_os = "linux")]
+        let footer = action_bar(
+            div().flex().flex_col()
+                .child(strong(BODY, pl.text).child(format!("{n_extra} related items selected · {}", human_bytes(extra))))
+                .child(text(CAPTION, pl.text3).child(if app.user_flatpak.is_some() { "User data and shared runtimes are kept when uninstalling." } else { "Remove the app through your software manager." })),
+            div().flex().gap(px(8.))
+                .children((n_extra > 0 && !self.flatpak_uninstall_pending).then(|| button("remove-app-data", Kind::Danger, Some("trash"), "Move Data to Trash")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let items = this.leftovers.done().map(|left| left.iter().filter(|l| this.leftovers_selected.contains(&l.path))
+                            .map(|l| (l.path.clone(), l.size, Method::Trash)).collect()).unwrap_or_default();
+                        this.ask("Move selected app data to the Trash?", "Move", items, |this, _| {
+                            this.leftovers = crate::app::Job::Idle;
+                            this.leftovers_selected.clear();
+                            this.selected_app = None;
+                        }, cx);
+                    }))))
+                .child(if self.flatpak_uninstall_pending {
+                    pill("Uninstalling…", pl.text3).into_any_element()
+                } else if app.user_flatpak.is_some() {
+                    button("uninstall", Kind::Danger, Some("trash"), "Uninstall…").on_click(cx.listener(move |this, _, _, cx| {
+                        this.flatpak_confirm = Some(app.clone());
+                        cx.notify();
+                    })).into_any_element()
+                } else {
+                    button("uninstall", Kind::Secondary, Some("external"), "Open Software").on_click(cx.listener(move |this, _, _, cx| {
+                        if let Err(error) = macscrap_core::apps::open_software_manager(&app) {
+                            this.show_toast(error, false);
+                        }
+                        cx.notify();
+                    })).into_any_element()
+                }),
         );
         (body, Some(footer.into_any_element()))
     }

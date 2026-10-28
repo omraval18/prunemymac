@@ -1,6 +1,6 @@
 # prunemymac
 
-A fast, lightweight Mac cleaner and health monitor written in Rust with [GPUI](https://gpui.rs) (Zed's GPU-accelerated UI framework). Single 18 MB binary, ~75 MB RAM, ~2% CPU idle.
+A desktop cleaner and health monitor for macOS and Linux written in Rust with [GPUI](https://gpui.rs) (Zed's GPU-accelerated UI framework). Single 18 MB binary, ~75 MB RAM, ~2% CPU idle.
 
 ```sh
 cargo run --release -p prunemymac        # run
@@ -16,14 +16,32 @@ To build a universal release, install the Rust target for the other Mac architec
 
 For complete results, give `prunemymac.app` **Full Disk Access** (System Settings → Privacy & Security). Without it, Mail, Safari and other apps' containers are skipped.
 
+## Linux
+
+The same pages are available on Linux, using Linux-specific system data and cleanup rules. Build on the Linux distribution and architecture where you intend to run it; Linux binaries depend on the system libraries they were built against.
+
+Install Rust and your distribution's development packages for Fontconfig, FreeType, XKB, X11, Wayland, ALSA and OpenSSL, plus Clang and pkg-config. A working graphics driver with Vulkan support is required. On Debian or Ubuntu the packages are `pkg-config clang libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev libasound2-dev libssl-dev`. Install `iproute2` (which provides `ss`) for the Network page and `libnotify-bin` for notifications.
+
+```sh
+scripts/bundle-linux.sh                  # build an archive and SHA-256 checksum in target/
+tar -xzf target/prunemymac-v*-linux-*.tar.gz
+./prunemymac/install.sh                  # install for the current user
+```
+
+The Linux installer adds a launcher and installs the binary in `~/.local/bin`; no administrator access is needed. Linux cleanup is restricted to the current home directory, and its built-in cache rules require review. System-installed applications open the desktop software manager for removal; user Flatpak apps can be uninstalled after confirmation. App discovery, process grouping, system metrics, maintenance tools and port ownership depend on the desktop environment, distribution, and permissions. Some apps or services may not be identified. Network data is sampled connections and sockets, not a complete request log.
+
+Linux protection uses a limited set of bundled YARA rules and optional user rules in `${XDG_CONFIG_HOME:-~/.config}/prunemymac/yara/`; bundled rules are not automatically updated. Findings are indicators for review, not proof of malware. ClamAV can be installed separately for deeper scans. Linux does not use macOS XProtect signatures.
+
 ## Features
+
+The descriptions below describe the macOS implementation; Linux uses the equivalents and limitations described above.
 
 | Page | What it does | How |
 |---|---|---|
 | **Health** | Disk free, memory pressure, CPU load + temperature, battery, network. Flags heat, memory pressure and low disk; sends a macOS notification if the CPU stays ≥ 85 °C for 30 s | `sysinfo` (Apple Silicon die sensors via IOHID), `sysctl kern.memorystatus_level`, `statfs`, `pmset` |
 | **Cleanup** | Caches, logs, Xcode/simulator junk, package-manager caches, Electron app caches, old installers, iOS backups, local AI models | Rule file `rules/junk.toml` (globs, age, safe/review, delete/trash) |
 | **Large & Old Files** | Files ≥ 100 MB / 500 MB / 1 GB in your home folder, flagged when unused for 6+ months | Parallel walker with pruning (≈ 800k files in ~6 s) |
-| **Duplicates** | Byte-identical files ≥ 1 MB; keeps the oldest copy by default | size → xxh3 of first 16 KB → full BLAKE3; hard links ignored |
+| **Duplicates** | Byte-identical files ≥ 1 MB; requires manual selection and keeps at least one copy | size → xxh3 of first 16 KB → full BLAKE3; hard links ignored |
 | **Uninstaller** | App + caches, prefs, containers, group containers, launch agents/daemons, privileged helpers, crash reports | Matches bundle ID / team-prefixed IDs / exact app name across ~20 locations |
 | **Performance** | Processes grouped by app, third-party launch agents/daemons with Running / Broken / Unsigned badges (Remove), plus maintenance: flush DNS, free RAM, reindex Spotlight, thin Time Machine snapshots | `launchctl`, `codesign`; maintenance asks for your admin password via the standard macOS prompt |
 | **Protection** | Malware quick scan + persistence audit; optional ClamAV deep scan | See below |

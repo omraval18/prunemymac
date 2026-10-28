@@ -98,10 +98,14 @@ pub fn is_dark() -> bool {
 
 /// Honor System Settings → Accessibility → Display → Reduce motion.
 pub fn load_motion_preference() {
+    #[cfg(target_os = "macos")]
     let reduce = std::process::Command::new("/usr/bin/defaults")
         .args(["read", "com.apple.universalaccess", "reduceMotion"])
         .output()
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1");
+    #[cfg(target_os = "linux")]
+    let reduce = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "enable-animations"])
+        .output().is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "false");
     REDUCE_MOTION.store(reduce, Ordering::Relaxed);
 }
 
@@ -324,13 +328,18 @@ pub fn section_label(label: &str) -> Div {
 }
 
 pub fn page_header(title: &str, subtitle: &str) -> Div {
+    // Do not truncate the subtitle: with flex shrink that collapsed every page
+    // header to a literal "..." line. Let it wrap within the available width.
     div()
         .flex()
         .flex_col()
         .gap(px(3.))
         .min_w_0()
+        .flex_1()
         .child(text(TITLE, p().text).font_family("Geist").font_weight(FontWeight::BOLD).child(title.to_string()))
-        .child(text(BODY, p().text2).child(subtitle.to_string()))
+        .when(!subtitle.is_empty(), |d| {
+            d.child(text(BODY, p().text2).min_w_0().w_full().child(subtitle.to_string()))
+        })
 }
 
 /// Centered placeholder: icon, title, one line of guidance, optional action.

@@ -82,7 +82,7 @@ impl MacScrap {
             );
         };
         if groups.is_empty() {
-            return page(head, None, empty_view("check-circle", pl.green, "Nothing to clean", "Your Mac has no junk worth removing right now.", None), None);
+            return page(head, None, empty_view("check-circle", pl.green, "Nothing to clean", if cfg!(target_os = "linux") { "No matching files were found." } else { "Your Mac has no junk worth removing right now." }, None), None);
         }
 
         let gen = self.junk.generation();

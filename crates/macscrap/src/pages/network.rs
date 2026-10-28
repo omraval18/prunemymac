@@ -68,7 +68,7 @@ impl MacScrap {
                             .child(tile_icon(if reason.is_some() { "alert" } else { "globe" }, color, 30.))
                             .child(div().flex_1().min_w_0().flex().flex_col()
                                 .child(text(BODY, pl.text).font_weight(FontWeight::MEDIUM).truncate()
-                                    .child(format!("{} · PID {}", connection.process, connection.pid)))
+                                    .child(if connection.pid == 0 { connection.process.clone() } else { format!("{} · PID {}", connection.process, connection.pid) }))
                                 .child(text(CAPTION, pl.text3).truncate().child(detail)))
                             .child(div().w(px(250.)).flex_none().flex().flex_col()
                                 .child(text(BODY, pl.text).truncate().child(connection.remote.clone()))
@@ -88,7 +88,11 @@ impl MacScrap {
         let pl = p();
         let mut body = scroll_body("network-ports-list").gap(px(12.))
             .child(note("info", "Shows listening TCP ports and bound UDP sockets visible to your account. Some system or other users' ports may be missing."))
-            .child(note("lock", "System, privileged, and unverified processes are protected. Stopping an app may interrupt work or services even on a high-numbered port."));
+            .child(note("lock", if cfg!(target_os = "linux") {
+                "System processes, privileged ports, and unrecognized programs are protected. Stopping a program can interrupt work or services."
+            } else {
+                "System, privileged, and unverified processes are protected. Stopping an app may interrupt work or services even on a high-numbered port."
+            }));
         match &self.network_ports {
             None => body = body.child(note("loader", "Reading ports…")),
             Some(Err(error)) => body = body.child(note("alert", error)),
@@ -114,7 +118,7 @@ impl MacScrap {
                     list_row(format!("port-{ix}"))
                         .child(tile_icon("wifi", pl.text2, 30.))
                         .child(div().flex_1().min_w_0().flex().flex_col()
-                            .child(text(BODY, pl.text).font_weight(FontWeight::MEDIUM).truncate().child(format!("{process} · PID {}", port.pid)))
+                            .child(text(BODY, pl.text).font_weight(FontWeight::MEDIUM).truncate().child(if port.pid == 0 { process } else { format!("{process} · PID {}", port.pid) }))
                             .child(text(CAPTION, pl.text3).truncate().child(detail)))
                         .child(div().w(px(150.)).flex_none().flex().flex_col()
                             .child(strong(BODY, pl.text).child(format!("{} {}", port.protocol, port.number)))

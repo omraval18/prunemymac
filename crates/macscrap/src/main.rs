@@ -24,10 +24,8 @@ impl AssetSource for Assets {
 }
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some(macscrap_core::malware::HELPER_FLAG) {
-        macscrap_core::malware::helper_main();
-        return;
-    }
+    // Protection / YARA runs in the sibling `prunemymac-protect` binary so this
+    // GUI process does not link cranelift/wasmtime.
     macscrap_core::sys::init_thread_pool();
     theme::load_motion_preference();
     Application::new().with_assets(Assets).run(|cx: &mut App| {

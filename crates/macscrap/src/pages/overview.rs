@@ -63,7 +63,7 @@ impl MacScrap {
         page(
             header(
                 "Overview",
-                self.health.as_ref().map(|s| model_name(&s.model)).unwrap_or("Your Mac"),
+                self.health.as_ref().map(|s| model_name(&s.model)).unwrap_or(if cfg!(target_os = "linux") { "Your computer" } else { "Your Mac" }),
                 div(),
             ),
             None,
@@ -77,28 +77,42 @@ impl MacScrap {
         (items.iter().map(|i| i.1).sum(), items)
     }
 
+    fn found_junk_bytes(&self) -> u64 {
+        self.junk.done().map(|g| g.iter().map(|g| g.size()).sum()).unwrap_or(0)
+    }
+
     fn hero(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let pl = p();
         let running = self.smart_scan_running();
         let (safe, _) = self.safe_junk();
+        let found = self.found_junk_bytes();
         let threats = self.protection.done().map(|t| t.malicious()).unwrap_or(0);
+        let suspicious = self.protection.done().map(|t| t.threats.iter().filter(|t| t.severity == macscrap_core::malware::Severity::Suspicious).count()).unwrap_or(0);
 
         let (tile, color, title, subtitle): (&str, u32, String, String) = if !self.smart_scan_started {
             (
                 "scan",
                 pl.accent,
-                "Let's check on your Mac".into(),
+                if cfg!(target_os = "linux") { "Let's check your computer" } else { "Let's check on your Mac" }.into(),
                 "Smart Scan looks for junk, malware, heavy background apps and large files. Nothing is removed until you review it.".into(),
             )
         } else if running {
             let phase = self.junk_phase.lock().unwrap().clone();
-            ("scan", pl.accent, "Scanning your Mac…".into(), if phase.is_empty() { "Getting started".into() } else { format!("Checking {phase}") })
+            ("scan", pl.accent, if cfg!(target_os = "linux") { "Scanning your computer…" } else { "Scanning your Mac…" }.into(), if phase.is_empty() { "Getting started".into() } else { format!("Checking {phase}") })
         } else if threats > 0 {
             ("shield-alert", pl.red, format!("{threats} {} need your attention", if threats == 1 { "threat" } else { "threats" }), "Review them in Protection.".into())
+        } else if suspicious > 0 {
+            ("alert", pl.orange, format!("{suspicious} {} to review", if suspicious == 1 { "finding" } else { "findings" }), "Review them in Protection.".into())
+        } else if self.protection.done().is_some_and(|t| t.error.is_some()) {
+            ("alert", pl.orange, "Protection scan incomplete".into(), "Open Protection for details and available scan options.".into())
         } else if safe > 0 {
             ("sparkles", pl.green, format!("{} can be freed safely", human_bytes(safe)), "Caches, logs and leftovers apps rebuild on their own. No malware found.".into())
+        } else if found > 0 {
+            // Linux rules are review-only, so nothing is pre-selected. Still
+            // surface the same total the Cleanup tile shows.
+            ("sparkles", pl.accent, format!("{} of junk to review", human_bytes(found)), "Open Cleanup to review it. Nothing is removed until you select it.".into())
         } else {
-            ("check-circle", pl.green, "Your Mac is in great shape".into(), "No junk worth cleaning and no malware found.".into())
+            ("check-circle", pl.green, if cfg!(target_os = "linux") { "Your computer is in great shape" } else { "Your Mac is in great shape" }.into(), "No junk worth cleaning and no malware found.".into())
         };
 
         let actions = if running {
@@ -153,10 +167,17 @@ impl MacScrap {
 
     fn result_tiles(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let pl = p();
-        let heavy = self.processes.done().map(|p| p.iter().filter(|p| p.cpu >= 30.0).count());
+        let heavy = self.processes.done().map(|processes| {
+            let mut apps = std::collections::HashMap::new();
+            for process in processes {
+                if let Some(app) = &process.app_bundle { *apps.entry(app).or_insert(0.0f32) += process.cpu; }
+            }
+            apps.values().filter(|&&cpu| cpu >= 30.0).count()
+        });
         let startup = self.launch.done().map(|l| l.iter().filter(|i| !i.is_apple()).count());
         let large: Option<(usize, u64)> = self.large.done().map(|f| {
-            let big: Vec<_> = f.iter().filter(|f| f.size >= 500_000_000).collect();
+            let threshold = self.large_min;
+            let big: Vec<_> = f.iter().filter(|f| f.size >= threshold).collect();
             (big.len(), big.iter().map(|f| f.size).sum())
         });
 
@@ -174,9 +195,12 @@ impl MacScrap {
                 "shield",
                 pl.green,
                 "Protection",
-                self.protection.done().map(|t| match t.malicious() {
-                    0 => ("No threats".into(), format!("{} files checked", fmt_count(t.scanned))),
-                    n => (format!("{n} threats"), "need review".into()),
+                self.protection.done().map(|t| {
+                    let suspicious = t.threats.iter().filter(|t| t.severity == macscrap_core::malware::Severity::Suspicious).count();
+                    if t.error.is_some() { ("Scan incomplete".into(), "Check Protection".into()) }
+                    else if t.malicious() > 0 { (format!("{} threats", t.malicious()), "need review".into()) }
+                    else if suspicious > 0 { (format!("{suspicious} findings"), "need review".into()) }
+                    else { ("No threats".into(), format!("{} files checked", fmt_count(t.scanned))) }
                 }),
                 self.protection.is_running(),
             ),
@@ -198,7 +222,7 @@ impl MacScrap {
                 "file",
                 pl.indigo,
                 "Large Files",
-                large.map(|(n, size)| (format!("{n} files"), format!("{} over 500 MB", human_bytes(size)))),
+                large.map(|(n, size)| (format!("{n} files"), format!("{} over {}", human_bytes(size), human_bytes(self.large_min)))),
                 self.large.is_running(),
             ),
         ];
@@ -251,7 +275,8 @@ impl MacScrap {
     }
 }
 
-fn model_name(id: &str) -> &'static str {
+fn model_name(id: &str) -> &str {
+    if cfg!(target_os = "linux") { return id; }
     // hw.model identifiers → marketing family; exact model years aren't needed here.
     if id.starts_with("MacBookPro") {
         "MacBook Pro"
@@ -331,9 +356,9 @@ fn storage_card(s: &Snapshot) -> Div {
 
 fn memory_card(s: &Snapshot) -> Div {
     let pl = p();
-    health_card("memory", "Memory", Some(level_status(s.mem_level(), "Normal", "Elevated", "High")))
-        .child(big_number(s.mem_pressure.to_string(), "% pressure"))
-        .child(meter(s.mem_pressure as f32 / 100.0, if s.mem_level() == Level::Good { pl.green } else { level_color(s.mem_level()) }))
+    health_card("memory", "Memory", s.mem_pressure.map(|_| level_status(s.mem_level(), "Normal", "Elevated", "High")))
+        .child(big_number(s.mem_pressure.map(|p| p.to_string()).unwrap_or_else(|| "—".into()), "% pressure"))
+        .children(s.mem_pressure.map(|p| meter(p as f32 / 100.0, if s.mem_level() == Level::Good { pl.green } else { level_color(s.mem_level()) })))
         .child(text(CAPTION, pl.text3).child(format!(
             "{} of {} in use · {} swap",
             human_bytes(s.mem_used),
@@ -359,11 +384,11 @@ fn cpu_card(s: &Snapshot, history: &std::collections::VecDeque<f32>) -> Div {
     health_card("cpu", "CPU", status)
         .child(big_number(format!("{:.0}", s.cpu_load), "% load"))
         .child(spark)
-        .child(text(CAPTION, if s.temp_level() == Level::Critical { pl.red } else { pl.text3 }).child(match s.temp_level() {
+        .child(text(CAPTION, if s.temp_level() == Level::Critical { pl.red } else { pl.text3 }).child(if s.cpu_temp.is_none() { "Temperature unavailable" } else { match s.temp_level() {
             Level::Critical => "Running hot. See Performance for busy apps.",
             Level::Warn => "Warm, but within normal range",
             Level::Good => "Temperature normal",
-        }))
+        }}))
 }
 
 fn power_card(s: &Snapshot) -> Div {
@@ -384,6 +409,9 @@ fn power_card(s: &Snapshot) -> Div {
                 _ => "Estimating…".into(),
             }))
         }
+        None if cfg!(target_os = "linux") => health_card("bolt", "Power", None)
+            .child(big_number("—".into(), ""))
+            .child(text(CAPTION, pl.text3).child("Battery information unavailable")),
         None => health_card("bolt", "Power", Some(("Connected".into(), pl.green)))
             .child(big_number("AC".into(), "power"))
             .child(text(CAPTION, pl.text3).child("This Mac has no battery")),

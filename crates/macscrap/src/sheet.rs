@@ -37,6 +37,8 @@ fn backdrop(content: impl IntoElement, dismiss: bool, cx: &mut Context<MacScrap>
                 if dismiss {
                     this.confirm = None;
                     this.port_confirm = None;
+                    #[cfg(target_os = "linux")]
+                    { this.flatpak_confirm = None; }
                     if this.cleaning.as_ref().is_some_and(|c| c.completed_at.is_some()) {
                         this.cleaning = None;
                     }
@@ -65,6 +67,10 @@ fn panel(width: f32) -> gpui::Stateful<gpui::Div> {
 
 impl MacScrap {
     pub fn sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        #[cfg(target_os = "linux")]
+        if self.flatpak_confirm.is_some() {
+            return Some(self.flatpak_confirm_view(cx));
+        }
         if self.port_confirm.is_some() {
             return Some(self.port_confirm_view(cx));
         }
@@ -75,6 +81,23 @@ impl MacScrap {
             return Some(self.cleaning_view(window, cx));
         }
         None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn flatpak_confirm_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let pl = p();
+        let app = self.flatpak_confirm.as_ref().unwrap();
+        backdrop(panel(420.).gap(px(16.))
+            .child(tile_icon("trash", pl.accent, 40.))
+            .child(strong(HEADLINE, pl.text).child(format!("Uninstall {}?", app.name)))
+            .child(text(BODY, pl.text2).child("The per-user Flatpak application will be removed. Its data and shared runtimes are kept; you can review related data separately."))
+            .child(div().flex().justify_end().gap(px(8.))
+                .child(button("flatpak-cancel", Kind::Secondary, None, "Cancel").on_click(cx.listener(|this, _, _, cx| {
+                    this.flatpak_confirm = None;
+                    cx.notify();
+                })))
+                .child(button("flatpak-confirm", Kind::Danger, None, "Uninstall").on_click(cx.listener(|this, _, _, cx| this.uninstall_flatpak(cx))))),
+            true, cx).into_any_element()
     }
 
     fn port_confirm_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -138,9 +161,11 @@ impl MacScrap {
                             .p(px(12.))
                             .rounded(px(10.))
                             .bg(c(pl.surface2))
-                            .when(trash > 0, |d| d.child(line("trash", format!("{trash} moved to the Trash. You can put them back until you empty it."))))
-                            .when(delete > 0, |d| d.child(line("refresh", format!("{delete} caches and logs deleted. Apps recreate them when needed.")))),
+                            .when(trash > 0, |d| d.child(line("trash", format!("{trash} {} will move to the Trash and can be restored until it is emptied.", if trash == 1 { "item" } else { "items" }))))
+                            .when(delete > 0, |d| d.child(line("alert", format!("{delete} {} will be permanently deleted.", if delete == 1 { "item" } else { "items" })))),
                     )
+                    .child(div().id("confirm-paths").w_full().max_h(px(140.)).overflow_y_scroll().flex().flex_col().gap(px(4.))
+                        .children(confirm.items.iter().map(|item| text(CAPTION, pl.text2).child(item.0.display().to_string()))))
                     .child(
                         div()
                             .flex()
@@ -233,7 +258,7 @@ impl MacScrap {
 
         let (title, subtitle): (String, String) = if done {
             (
-                format!("{} freed", human_bytes(freed_total)),
+                format!("{} {}", human_bytes(freed_total), if c_.has_trash { "processed" } else { "freed" }),
                 format!("{removed} {} {}", if removed == 1 { "item" } else { "items" }, if verb == "Uninstall" { "removed" } else { "cleaned up" }),
             )
         } else {

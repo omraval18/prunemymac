@@ -31,6 +31,9 @@ pub struct Port {
 
 /// Listening TCP ports and bound UDP sockets visible to the current user.
 pub fn ports() -> Result<Vec<Port>, String> {
+    #[cfg(target_os = "linux")]
+    let output = Command::new("ss").args(["-H", "-n", "-t", "-u", "-l", "-p"]).output().map_err(|e| format!("Could not read ports: {e}. Install iproute2 (ss)."))?;
+    #[cfg(target_os = "macos")]
     let output = Command::new("/usr/sbin/lsof")
         .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-iUDP", "-FpcuPn"])
         .output().map_err(|e| format!("Could not read ports: {e}"))?;
@@ -39,6 +42,9 @@ pub fn ports() -> Result<Vec<Port>, String> {
         return Err(if detail.trim().is_empty() { format!("Could not read ports ({})", output.status) }
             else { format!("Could not read ports: {}", detail.trim()) });
     }
+    #[cfg(target_os = "linux")]
+    let mut rows = parse_ss_ports(&String::from_utf8_lossy(&output.stdout));
+    #[cfg(target_os = "macos")]
     let mut rows = parse_ports(&String::from_utf8_lossy(&output.stdout));
     let mut sys = System::new();
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing()
@@ -90,6 +96,7 @@ fn port_lock_reason(pid: u32, same_user: bool, number: u16, started: u64, execut
 
 /// Refuse anything except a verified, non-Apple application executable.
 /// A valid signature alone never implies that stopping an app is harmless.
+#[cfg(target_os = "macos")]
 pub(crate) fn verified_third_party_app(executable: &Path) -> bool {
     let Ok(executable) = executable.canonicalize() else { return false };
     let Some(bundle) = crate::background::app_bundle(&executable) else { return false };
@@ -107,6 +114,47 @@ pub(crate) fn verified_third_party_app(executable: &Path) -> bool {
     text.lines().find_map(|line| line.strip_prefix("Authority="))
         .is_some_and(|authority| authority.starts_with("Developer ID Application:") || authority.starts_with("Apple Distribution:"))
         && text.lines().any(|line| line.starts_with("TeamIdentifier=") && line != "TeamIdentifier=not set")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn verified_third_party_app(executable: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(executable) = executable.canonicalize() else { return false };
+    let Ok(home) = crate::fsutil::home().canonicalize() else { return false };
+    let Ok(meta) = std::fs::metadata(&executable) else { return false };
+    let uid = unsafe { libc::getuid() };
+    if uid == 0 || !meta.is_file() { return false; }
+    if executable.starts_with(&home) && meta.uid() == uid { return true; }
+    if meta.uid() != 0 || !(executable.starts_with("/usr") || executable.starts_with("/opt")) { return false; }
+    let Some(package) = linux_desktop_packages().get(&executable).cloned() else { return false };
+    // Confirm the executable belongs to the same installed package as the
+    // desktop entry. Essential and required system packages stay protected.
+    let Ok(owner) = Command::new("dpkg-query").args(["--search", "--"]).arg(&executable).output() else { return false };
+    if !owner.status.success() { return false; }
+    let owner_text = String::from_utf8_lossy(&owner.stdout);
+    let owns_executable = owner_text.lines().filter_map(|line| line.rsplit_once(": "))
+        .any(|(name, path)| name.split(':').next() == Some(package.as_str()) && Path::new(path) == executable);
+    if !owns_executable { return false; }
+    let Ok(status) = Command::new("dpkg-query").args(["-W", "-f=${db:Status-Status}\t${Essential}\t${Priority}", "--", &package]).output() else { return false };
+    if !status.status.success() { return false; }
+    let text = String::from_utf8_lossy(&status.stdout);
+    let fields: Vec<_> = text.trim_end().split('\t').collect();
+    fields.len() == 3 && fields[0] == "installed" && fields[1] != "yes" && matches!(fields[2], "optional" | "extra")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_desktop_packages() -> HashMap<PathBuf, String> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, HashMap<PathBuf, String>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(cache) = cache.lock() {
+        if let Some((at, entries)) = &*cache {
+            if at.elapsed() < Duration::from_secs(60) { return entries.clone(); }
+        }
+    }
+    let entries: HashMap<_, _> = crate::apps::list(&crate::Cancel::new()).into_iter()
+        .filter_map(|app| Some((app.executable?, app.package?))).collect();
+    if let Ok(mut cache) = cache.lock() { *cache = Some((Instant::now(), entries.clone())); }
+    entries
 }
 
 /// Recheck identity, ownership, signature and port immediately before SIGTERM.
@@ -173,6 +221,9 @@ fn parse_ports(output: &str) -> Vec<Port> {
 /// Snapshot only: short-lived connections and processes owned by other users
 /// can be absent. Socket direction and HTTP request details are not available.
 pub fn connections() -> Result<Vec<Connection>, String> {
+    #[cfg(target_os = "linux")]
+    let output = Command::new("ss").args(["-H", "-n", "-t", "-p", "state", "established"]).output().map_err(|e| format!("Could not read connections: {e}. Install iproute2 (ss)."))?;
+    #[cfg(target_os = "macos")]
     let output = Command::new("/usr/sbin/lsof")
         .args(["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fpcn"])
         .output()
@@ -187,6 +238,9 @@ pub fn connections() -> Result<Vec<Connection>, String> {
             format!("Could not read connections: {detail}")
         });
     }
+    #[cfg(target_os = "linux")]
+    let mut rows = parse_ss_connections(&String::from_utf8_lossy(&output.stdout));
+    #[cfg(target_os = "macos")]
     let mut rows = parse_lsof(&String::from_utf8_lossy(&output.stdout));
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -203,6 +257,47 @@ pub fn connections() -> Result<Vec<Connection>, String> {
         .then_with(|| a.process.to_lowercase().cmp(&b.process.to_lowercase()))
         .then_with(|| a.remote.cmp(&b.remote)));
     Ok(rows)
+}
+
+#[cfg(target_os = "linux")]
+fn ss_owners(line: &str) -> Vec<(u32, String)> {
+    let mut owners = Vec::new();
+    for part in line.split("(\"").skip(1) {
+        let Some((name, rest)) = part.split_once('"') else { continue };
+        let Some(pid) = rest.split("pid=").nth(1).and_then(|p| p.split(|c: char| !c.is_ascii_digit()).next()).and_then(|p| p.parse().ok()) else { continue };
+        owners.push((pid, name.to_string()));
+    }
+    if owners.is_empty() { owners.push((0, "Unknown process".into())); }
+    owners
+}
+
+#[cfg(target_os = "linux")]
+fn parse_ss_ports(output: &str) -> Vec<Port> {
+    let mut rows = Vec::new();
+    for line in output.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() < 6 { continue; }
+        let protocol = match fields[0] { "tcp" => "TCP", "udp" => "UDP", _ => continue };
+        let address = fields[4];
+        let Some(number) = address.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()) else { continue };
+        for (pid, process) in ss_owners(line) {
+            rows.push(Port { pid, process, protocol: protocol.into(), address: address.into(), number, executable: None, started: 0, locked_reason: Some("Process identity unavailable") });
+        }
+    }
+    rows
+}
+
+#[cfg(target_os = "linux")]
+fn parse_ss_connections(output: &str) -> Vec<Connection> {
+    let mut rows = Vec::new();
+    for line in output.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() < 4 { continue; }
+        for (pid, process) in ss_owners(line) {
+            rows.push(Connection { pid, process, local: fields[2].into(), remote: fields[3].into(), executable: None, review_reason: None });
+        }
+    }
+    rows
 }
 
 fn review_reason(path: &Path, downloads: &Path) -> Option<&'static str> {
@@ -246,6 +341,27 @@ fn parse_lsof(output: &str) -> Vec<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ss_sockets_show_owners_and_lock_unknown_processes() {
+        let ports = parse_ss_ports("tcp LISTEN 0 128 127.0.0.1:8080 0.0.0.0:* users:((\"server\",pid=123,fd=3))\nudp UNCONN 0 0 [::]:5353 [::]:*\n");
+        assert_eq!((ports[0].pid, ports[0].number, ports[0].process.as_str()), (123, 8080, "server"));
+        assert_eq!((ports[1].pid, ports[1].number), (0, 5353));
+        assert!(ports[1].locked_reason.is_some());
+        let connections = parse_ss_connections("0 0 127.0.0.1:4040 203.0.113.1:443 users:((\"browser\",pid=124,fd=4))\n");
+        assert_eq!((connections[0].pid, connections[0].remote.as_str()), (124, "203.0.113.1:443"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn live_ss_finds_a_listener_without_lsof() {
+        if Command::new("ss").arg("--version").output().is_err() { return; }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let number = listener.local_addr().unwrap().port();
+        let found = ports().unwrap().into_iter().find(|p| p.number == number && p.pid == std::process::id()).expect("own listener visible through ss");
+        assert!(found.locked_reason.is_some());
+    }
 
     #[test]
     fn parses_multiple_processes_and_ipv6_connections() {

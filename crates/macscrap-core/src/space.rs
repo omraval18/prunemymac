@@ -161,7 +161,7 @@ pub fn disk_used() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::listing::{read_bulk, read_std, Listing};
+    use crate::listing::{read_entries, read_std, Listing};
 
     #[test]
     fn bulk_matches_std() {
@@ -172,7 +172,7 @@ mod tests {
         std::fs::write(dir.join("a/b/three.bin"), vec![3u8; 50_000]).unwrap();
         std::os::unix::fs::symlink("/etc", dir.join("link")).unwrap();
 
-        let bulk = read_bulk(&dir).unwrap();
+        let bulk = read_entries(&dir).unwrap();
         let std_ = read_std(&dir).unwrap();
         let flat = |l: &Listing| {
             let mut v: Vec<(String, bool, u64, u64)> = l

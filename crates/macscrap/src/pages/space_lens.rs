@@ -100,10 +100,12 @@ impl MacScrap {
             prompt: Some("Map Folder".into()),
         });
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                if let Some(path) = paths.into_iter().next() {
+            match rx.await {
+                Ok(Ok(Some(paths))) => if let Some(path) = paths.into_iter().next() {
                     this.update(cx, |this, cx| this.start_lens_scan(LensScope::Folder(path), cx)).ok();
-                }
+                },
+                Ok(Ok(None)) => {},
+                _ => { this.update(cx, |this, cx| { this.show_toast("Folder picker unavailable; check your desktop portal", false); cx.notify(); }).ok(); }
             }
         })
         .detach();
@@ -119,7 +121,7 @@ impl MacScrap {
         let running = self.lens.is_running();
         let scopes = segmented()
             .child(segment("sc-home", "Home", scope_ix == 0).on_click(cx.listener(|this, _, _, cx| this.start_lens_scan(LensScope::Home, cx))))
-            .child(segment("sc-mac", "Entire Mac", scope_ix == 1).on_click(cx.listener(|this, _, _, cx| this.start_lens_scan(LensScope::Mac, cx))))
+            .child(segment("sc-mac", if cfg!(target_os = "linux") { "System Disk" } else { "Entire Mac" }, scope_ix == 1).on_click(cx.listener(|this, _, _, cx| this.start_lens_scan(LensScope::Mac, cx))))
             .child(segment("sc-folder", "Folder…", scope_ix == 2).on_click(cx.listener(|this, _, _, cx| this.choose_folder(cx))));
         let actions = div()
             .flex()
@@ -146,7 +148,7 @@ impl MacScrap {
         if running {
             let what = match &self.lens_scope {
                 LensScope::Home => "Mapping your home folder".to_string(),
-                LensScope::Mac => "Mapping your entire Mac".to_string(),
+                LensScope::Mac => if cfg!(target_os = "linux") { "Mapping your system disk" } else { "Mapping your entire Mac" }.to_string(),
                 LensScope::Folder(p) => format!("Mapping {}", file_name(p)),
             };
             return page(head, None, scanning_view(&what, running_detail(self.lens.progress(), "files"), None), None);
@@ -156,7 +158,7 @@ impl MacScrap {
                 .flex()
                 .gap(px(8.))
                 .child(button("lens-home", Kind::Primary, Some("scan"), "Map Home Folder").on_click(cx.listener(|this, _, _, cx| this.start_lens_scan(LensScope::Home, cx))))
-                .child(button("lens-mac", Kind::Secondary, Some("disk"), "Entire Mac").on_click(cx.listener(|this, _, _, cx| this.start_lens_scan(LensScope::Mac, cx))))
+                .child(button("lens-mac", Kind::Secondary, Some("disk"), if cfg!(target_os = "linux") { "System Disk" } else { "Entire Mac" }).on_click(cx.listener(|this, _, _, cx| this.start_lens_scan(LensScope::Mac, cx))))
                 .into_any_element();
             return page(
                 head,
@@ -183,7 +185,7 @@ impl MacScrap {
         let mut crumbs: Vec<(String, usize)> = vec![(
             match &t.scope {
                 LensScope::Home => "Home".to_string(),
-                LensScope::Mac => "Macintosh HD".to_string(),
+                LensScope::Mac => if cfg!(target_os = "linux") { "System Disk" } else { "Macintosh HD" }.to_string(),
                 LensScope::Folder(p) => file_name(p),
             },
             0,
@@ -266,10 +268,10 @@ impl MacScrap {
                         .rounded(px(10.))
                         .bg(tint(pl.orange))
                         .child(icon("lock", pl.orange, 15.))
-                        .child(text(CAPTION, pl.text).flex_1().child("Some folders are hidden by macOS privacy protection. Give prunemymac Full Disk Access to see everything."))
-                        .child(button("fda", Kind::Secondary, None, "Open Settings").on_click(|_, _, _| {
+                        .child(text(CAPTION, pl.text).flex_1().child(if cfg!(target_os = "linux") { "Some folders could not be read with your account's permissions." } else { "Some folders are hidden by macOS privacy protection. Give prunemymac Full Disk Access to see everything." }))
+                        .when(cfg!(target_os = "macos"), |d| d.child(button("fda", Kind::Secondary, None, "Open Settings").on_click(|_, _, _| {
                             macscrap_core::sys::spawn_detached(std::process::Command::new("/usr/bin/open").arg(FDA_URL));
-                        })),
+                        }))),
                 )
             })
             .child(
@@ -340,8 +342,8 @@ impl MacScrap {
             ),
             Row::Hidden { .. } => (
                 tile_icon("disk", pl.text3, 30.).into_any_element(),
-                "macOS & system data".into(),
-                "System volume, snapshots and other volumes".into(),
+                if cfg!(target_os = "linux") { "Other system data" } else { "macOS & system data" }.into(),
+                if cfg!(target_os = "linux") { "Files inaccessible to this account and filesystem overhead" } else { "System volume, snapshots and other volumes" }.into(),
                 None,
             ),
         };

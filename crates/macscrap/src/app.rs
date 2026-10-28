@@ -131,6 +131,7 @@ pub struct Confirm {
 /// A clean in progress (or just finished), shown in the sheet.
 pub struct Cleaning {
     pub title: String,
+    pub has_trash: bool,
     pub total_items: usize,
     pub total_bytes: u64,
     pub progress: Arc<macscrap_core::clean::Progress>,
@@ -154,6 +155,32 @@ impl Threats {
     pub fn malicious(&self) -> usize {
         self.threats.iter().filter(|t| t.severity == Severity::Malicious).count()
     }
+
+    pub fn suspicious(&self) -> usize {
+        self.threats.iter().filter(|t| t.severity == Severity::Suspicious).count()
+    }
+
+    /// Sidebar / Overview indicator: malicious → red count, suspicious → orange
+    /// count, scan error → "!", clean → checkmark.
+    pub fn status_badge(&self) -> (&'static str, ProtectionBadge) {
+        if self.malicious() > 0 {
+            ("count", ProtectionBadge::Malicious)
+        } else if self.suspicious() > 0 {
+            ("count", ProtectionBadge::Suspicious)
+        } else if self.error.is_some() {
+            ("!", ProtectionBadge::Error)
+        } else {
+            ("✓", ProtectionBadge::Clean)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectionBadge {
+    Malicious,
+    Suspicious,
+    Error,
+    Clean,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -249,6 +276,10 @@ pub struct MacScrap {
     network_ports_last_refresh: Option<Instant>,
     pub port_confirm: Option<Port>,
     pub port_stop_pending: bool,
+    #[cfg(target_os = "linux")]
+    pub flatpak_confirm: Option<AppInfo>,
+    #[cfg(target_os = "linux")]
+    pub flatpak_uninstall_pending: bool,
 
     pub protection: Job<Threats>,
     pub last_protection_scan: Option<Instant>,
@@ -298,7 +329,7 @@ impl MacScrap {
             lens_chain: vec![],
             lens_selected: HashSet::new(),
             lens_scroll: gpui::UniformListScrollHandle::new(),
-            large_min: 500_000_000,
+            large_min: macscrap_core::files::LARGE_FILE_MIN,
             large_sort: LargeSort::Size,
             large_unused_only: false,
             large: Job::Idle,
@@ -325,6 +356,10 @@ impl MacScrap {
             network_ports_last_refresh: None,
             port_confirm: None,
             port_stop_pending: false,
+            #[cfg(target_os = "linux")]
+            flatpak_confirm: None,
+            #[cfg(target_os = "linux")]
+            flatpak_uninstall_pending: false,
             protection: Job::Idle,
             last_protection_scan: None,
             confirm: None,
@@ -344,7 +379,7 @@ impl MacScrap {
             if since.elapsed() > Duration::from_secs(30) && quiet {
                 self.last_hot_notice = Some(Instant::now());
                 notify(&format!(
-                    "Your Mac is running hot ({:.0}°C). Open prunemymac → Performance to see what's using the CPU.",
+                    "Your computer is running hot ({:.0}°C). Open prunemymac → Performance to see what's using the CPU.",
                     snap.cpu_temp.unwrap_or_default()
                 ));
             }
@@ -375,10 +410,10 @@ impl MacScrap {
         let pl = p();
         let mut out = vec![];
         if let (Some(t), Level::Critical) = (s.cpu_temp, s.temp_level()) {
-            out.push((format!("Your Mac is running hot at {t:.0}°C. Check Performance for apps using a lot of CPU."), pl.red));
+            out.push((format!("Your computer is running hot at {t:.0}°C. Check Performance for apps using a lot of CPU."), pl.red));
         }
         if s.mem_level() == Level::Critical {
-            out.push((format!("Memory pressure is high ({}%). Quitting unused apps will help.", s.mem_pressure), pl.orange));
+            out.push((format!("Memory pressure is high ({}%). Quitting unused apps will help.", s.mem_pressure.unwrap_or(0)), pl.orange));
         }
         if s.disk_level() != Level::Good {
             out.push((format!("Only {} free on your startup disk. Run Cleanup to free space.", human_bytes(s.disk_free)), pl.orange));
@@ -475,6 +510,33 @@ impl MacScrap {
         cx.notify();
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn uninstall_flatpak(&mut self, cx: &mut Context<Self>) {
+        let Some(app) = self.flatpak_confirm.take() else { return };
+        if self.flatpak_uninstall_pending { return; }
+        self.flatpak_uninstall_pending = true;
+        let name = app.name.clone();
+        let task = cx.background_executor().spawn(async move { macscrap_core::apps::uninstall_user_flatpak(&app) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.flatpak_uninstall_pending = false;
+                match result {
+                    Ok(()) => {
+                        this.show_toast(format!("Uninstalled {name}; user data was kept"), true);
+                        this.selected_app = None;
+                        this.leftovers = Job::Idle;
+                        this.leftovers_selected.clear();
+                        this.load_apps(cx);
+                    }
+                    Err(error) => this.show_toast(format!("Could not uninstall {name}: {error}"), false),
+                }
+                cx.notify();
+            }).ok();
+        }).detach();
+        cx.notify();
+    }
+
     pub fn start_junk_scan(&mut self, cx: &mut Context<Self>) {
         let phase = self.junk_phase.clone();
         self.junk_expanded.clear();
@@ -520,7 +582,7 @@ impl MacScrap {
         self.spawn_job(
             cx,
             |s| &mut s.large,
-            |cancel, n| macscrap_core::files::large_files(&macscrap_core::fsutil::home(), 100_000_000, &cancel, &n),
+            |cancel, n| macscrap_core::files::large_files(&macscrap_core::fsutil::home(), macscrap_core::files::LARGE_FILE_MIN, &cancel, &n),
             |s| s.large_selected.clear(),
         );
     }
@@ -530,14 +592,7 @@ impl MacScrap {
             cx,
             |s| &mut s.dupes,
             |cancel, n| macscrap_core::files::duplicates(&macscrap_core::fsutil::home(), 1_000_000, &cancel, &n),
-            |s| {
-                // Keep the oldest copy of each set; select the rest.
-                s.dupes_selected = s
-                    .dupes
-                    .done()
-                    .map(|sets| sets.iter().flat_map(|set| set.files.iter().skip(1).map(|f| f.path.clone())).collect())
-                    .unwrap_or_default();
-            },
+            |s| s.dupes_selected.clear(),
         );
     }
 
@@ -615,6 +670,7 @@ impl MacScrap {
         let progress = Arc::new(macscrap_core::clean::Progress::default());
         self.cleaning = Some(Cleaning {
             title: confirm.verb.clone(),
+            has_trash: confirm.items.iter().any(|item| item.2 == Method::Trash),
             total_items: confirm.items.len(),
             total_bytes: confirm.items.iter().map(|i| i.1).sum(),
             progress: progress.clone(),
@@ -633,6 +689,15 @@ impl MacScrap {
             let report = task.await;
             this.update(cx, |this, cx| {
                 on_done(this, &report);
+                // Other pages may have cached entries for the same paths.
+                this.prune_removed_junk();
+                if let Some(files) = this.large.done_mut() { files.retain(|f| f.path.exists()); }
+                if let Some(sets) = this.dupes.done_mut() {
+                    for set in sets.iter_mut() { set.files.retain(|f| f.path.exists()); }
+                    sets.retain(|set| set.files.len() > 1);
+                }
+                if let Some(result) = this.protection.done_mut() { result.threats.retain(|t| t.path.exists()); }
+                if this.page != Page::SpaceLens && !this.lens.is_running() { this.lens = Job::Idle; }
                 if let Some(c) = this.cleaning.as_mut() {
                     c.report = Some(report);
                 }
@@ -686,9 +751,19 @@ impl MacScrap {
                 (n.to_string(), pl.text3)
             }),
             Page::Duplicates => self.dupes.done().map(|d| size(d.iter().map(|s| s.wasted()).sum())),
-            Page::Protection => self.protection.done().map(|t| match t.malicious() {
-                0 => ("✓".to_string(), pl.green),
-                n => (n.to_string(), pl.red),
+            Page::Protection => self.protection.done().map(|t| {
+                let (label, kind) = t.status_badge();
+                let text = match kind {
+                    ProtectionBadge::Malicious => t.malicious().to_string(),
+                    ProtectionBadge::Suspicious => t.suspicious().to_string(),
+                    _ => label.to_string(),
+                };
+                let color = match kind {
+                    ProtectionBadge::Malicious => pl.red,
+                    ProtectionBadge::Suspicious | ProtectionBadge::Error => pl.orange,
+                    ProtectionBadge::Clean => pl.green,
+                };
+                (text, color)
             }),
             _ => None,
         }
@@ -797,7 +872,7 @@ impl MacScrap {
             .flex_col()
             .gap(px(7.))
             .child(row("disk", format!("{} free", human_bytes(s.disk_free)), level_text(s.disk_level())))
-            .child(row("memory", format!("{}% memory pressure", s.mem_pressure), level_text(s.mem_level())))
+            .child(row("memory", s.mem_pressure.map(|p| format!("{p}% memory pressure")).unwrap_or_else(|| "Memory pressure unavailable".into()), level_text(s.mem_level())))
             .child(row(
                 "thermometer",
                 match s.cpu_temp {
@@ -834,6 +909,11 @@ impl MacScrap {
 
     fn on_key(&mut self, e: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = e.keystroke.key.as_str();
+        #[cfg(target_os = "linux")]
+        if self.flatpak_confirm.is_some() {
+            if key == "escape" { self.flatpak_confirm = None; cx.notify(); }
+            return;
+        }
         if self.port_confirm.is_some() {
             if key == "escape" { self.port_confirm = None; } else { return; }
         } else if self.confirm.is_some() {
@@ -919,25 +999,71 @@ fn level_text(level: Level) -> u32 {
 }
 
 pub fn notify(message: &str) {
+    #[cfg(target_os = "linux")]
+    { macscrap_core::sys::spawn_detached(Command::new("notify-send").args(["prunemymac", message])); }
+    #[cfg(target_os = "macos")]
+    {
     let script = format!("display notification \"{}\" with title \"prunemymac\"", message.replace('"', "'"));
     macscrap_core::sys::spawn_detached(Command::new("/usr/bin/osascript").args(["-e", &script]));
+    }
 }
 
 pub fn reveal(path: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    { macscrap_core::sys::spawn_detached(Command::new("xdg-open").arg(if path.is_dir() { path } else { path.parent().unwrap_or(path) })); }
+    #[cfg(target_os = "macos")]
     macscrap_core::sys::spawn_detached(Command::new("/usr/bin/open").arg("-R").arg(path));
 }
 
 pub fn open_path(path: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    macscrap_core::sys::spawn_detached(Command::new("xdg-open").arg(path));
+    #[cfg(target_os = "macos")]
     macscrap_core::sys::spawn_detached(Command::new("/usr/bin/open").arg(path));
 }
 
 /// Run a shell command as root after the standard macOS admin password prompt.
 pub fn run_as_admin(shell: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let out = Command::new("pkexec").args(["/bin/sh", "-c", shell]).output().map_err(|e| format!("Could not start administrator authorization: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let out = {
     let script = format!("do shell script \"{}\" with administrator privileges", shell.replace('"', "\\\""));
-    let out = Command::new("/usr/bin/osascript").args(["-e", &script]).output().map_err(|e| e.to_string())?;
+    Command::new("/usr/bin/osascript").args(["-e", &script]).output().map_err(|e| e.to_string())?
+    };
     if out.status.success() {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod protection_badge_tests {
+    use super::*;
+    use macscrap_core::malware::{Severity, Threat};
+    use std::path::PathBuf;
+
+    fn threat(severity: Severity) -> Threat {
+        Threat { path: PathBuf::from("/tmp/x"), name: "t".into(), source: "test", severity }
+    }
+
+    #[test]
+    fn badge_prefers_malicious_then_suspicious_then_error() {
+        let mut t = Threats { threats: vec![threat(Severity::Suspicious)], error: Some("boom".into()), ..Default::default() };
+        assert_eq!(t.status_badge(), ("count", ProtectionBadge::Suspicious));
+        t.threats.push(threat(Severity::Malicious));
+        assert_eq!(t.status_badge(), ("count", ProtectionBadge::Malicious));
+        t.threats.clear();
+        assert_eq!(t.status_badge(), ("!", ProtectionBadge::Error));
+        t.error = None;
+        assert_eq!(t.status_badge(), ("✓", ProtectionBadge::Clean));
+    }
+
+    #[test]
+    fn suspicious_count_drives_review_indicator() {
+        let t = Threats { threats: vec![threat(Severity::Suspicious), threat(Severity::Info)], ..Default::default() };
+        assert_eq!(t.suspicious(), 1);
+        assert_eq!(t.malicious(), 0);
     }
 }
