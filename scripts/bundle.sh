@@ -1,13 +1,31 @@
 #!/bin/sh
-# Build a release prunemymac.app in target/. Usage: scripts/bundle.sh
+# Build a release prunemymac.app in target/. Use --universal for both Mac architectures.
 set -eu
 cd "$(dirname "$0")/.."
-cargo build --release -p prunemymac
+if [ "$#" -eq 1 ] && [ "$1" = "--universal" ]; then
+  case "$(uname -m)" in
+    arm64) OTHER_TARGET=x86_64-apple-darwin ;;
+    x86_64) OTHER_TARGET=aarch64-apple-darwin ;;
+    *) echo "Unsupported host architecture" >&2; exit 1 ;;
+  esac
+  cargo build --release --locked -p prunemymac
+  cargo build --release --locked -p prunemymac --target "$OTHER_TARGET"
+elif [ "$#" -eq 0 ]; then
+  cargo build --release --locked -p prunemymac
+else
+  echo "Usage: scripts/bundle.sh [--universal]" >&2
+  exit 1
+fi
 APP=target/prunemymac.app
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/prunemymac "$APP/Contents/MacOS/prunemymac"
+cp crates/macscrap/assets/fonts/*-OFL.txt "$APP/Contents/Resources/"
+if [ "${1:-}" = "--universal" ]; then
+  lipo -create target/release/prunemymac "target/$OTHER_TARGET/release/prunemymac" -output "$APP/Contents/MacOS/prunemymac"
+else
+  cp target/release/prunemymac "$APP/Contents/MacOS/prunemymac"
+fi
 ICONSET=$(mktemp -d)/prunemymac.iconset
 mkdir -p "$ICONSET"
 LOGO="$(dirname "$0")/../crates/macscrap/assets/images/chip-cleaner.png"

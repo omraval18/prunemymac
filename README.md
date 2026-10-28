@@ -5,11 +5,14 @@ A fast, lightweight Mac cleaner and health monitor written in Rust with [GPUI](h
 ```sh
 cargo run --release -p prunemymac        # run
 scripts/bundle.sh                      # build target/prunemymac.app
+scripts/release.sh                     # build a universal Mac DMG and checksum
 cargo test -p macscrap-core              # engine tests
 cargo run --release -p macscrap-core --example smoke   # read-only scan of this Mac, prints everything
 ```
 
 Needs Rust only. No Xcode required (GPUI's `runtime_shaders` feature compiles Metal shaders at runtime).
+
+To build a universal release, install the Rust target for the other Mac architecture with `rustup target add x86_64-apple-darwin` on Apple Silicon or `rustup target add aarch64-apple-darwin` on Intel. `scripts/release.sh` builds both architectures and packages them in a DMG. Builds are ad-hoc signed and are not notarized.
 
 For complete results, give `prunemymac.app` **Full Disk Access** (System Settings → Privacy & Security). Without it, Mail, Safari and other apps' containers are skipped.
 
