@@ -94,38 +94,17 @@ impl MacScrap {
 
     fn processes_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let pl = p();
-        let Job::Done(procs, gen) = &self.processes else {
+        let Job::Done(snapshot, gen) = &self.processes else {
             return scanning_view("Measuring activity", "Sampling CPU and memory".into(), None).into_any_element();
         };
         let gen = *gen;
-        // Merge groups that share a display name or executable basename
-        // (e.g. /usr/bin/node and /exec-daemon/node both show as "node").
-        let mut by_app = std::collections::BTreeMap::<String, Vec<_>>::new();
-        for proc_ in procs.iter().cloned() {
-            let key = process_group_key(&proc_);
-            by_app.entry(key).or_default().push(proc_);
-        }
-        let mut groups: Vec<_> = by_app.into_iter().collect();
-        groups.sort_by(|(_, a), (_, b)| {
-            let a_cpu: f32 = a.iter().map(|p| p.cpu).sum();
-            let b_cpu: f32 = b.iter().map(|p| p.cpu).sum();
-            b_cpu.total_cmp(&a_cpu)
-        });
-        let sections: Vec<AnyElement> = groups.into_iter().enumerate().map(|(group_ix, (key, procs))| {
-            let name = procs
-                .first()
-                .and_then(|p| p.app_name.clone())
-                .filter(|n| !n.is_empty())
-                .or_else(|| procs.first().map(|p| p.name.clone()))
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| "Other processes".into());
-            let cpu: f32 = procs.iter().map(|p| p.cpu).sum();
-            let memory: u64 = procs.iter().map(|p| p.memory).sum();
-            let count = procs.len();
-            let key = key;
+        let sections: Vec<AnyElement> = snapshot.groups.iter().enumerate().map(|(group_ix, group)| {
+            let (cpu, memory, count) = (group.cpu, group.memory, group.members.len());
+            let key = group.key.clone();
             let expanded = self.process_groups_expanded.contains(&key);
             let toggle_key = key.clone();
-            let rows: Vec<AnyElement> = if expanded { procs.into_iter().enumerate().map(|(ix, proc_)| {
+            let rows: Vec<AnyElement> = if expanded { group.members.iter().enumerate().map(|(ix, &index)| {
+                let proc_ = snapshot.processes[index].clone();
                 let busy = proc_.cpu >= 50.0;
                 let frac = (proc_.cpu / 100.0).min(1.0);
                 let name = proc_.name.clone();
@@ -138,7 +117,7 @@ impl MacScrap {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .child(text(BODY, pl.text).font_weight(FontWeight::MEDIUM).truncate().child(proc_.name.clone()))
+                                .child(text(BODY, pl.text).font_weight(FontWeight::MEDIUM).truncate().child(name.clone()))
                                 .child(text(CAPTION, pl.text3).child(format!("PID {} · {} memory", proc_.pid, human_bytes(proc_.memory)))),
                         )
                         .child(div().w(px(90.)).flex_none().child(meter(frac, if busy { pl.orange } else { pl.accent })))
@@ -173,9 +152,9 @@ impl MacScrap {
                     .px(px(8.)).py(px(8.)).rounded(px(8.)).cursor_pointer().hover(|s| s.bg(c(pl.hover)))
                     .child(icon(if expanded { "chevron-down" } else { "chevron-right" }, pl.text3, 14.))
                     .child(div().flex_1().min_w_0()
-                    .child(strong(BODY, pl.text).child(name))
+                    .child(strong(BODY, pl.text).child(group.name.clone()))
                     )
-                    .child(text(CAPTION, pl.text3).child(format!("{count} processes · {cpu:.0}% CPU · {} memory", human_bytes(memory))))
+                    .child(text(CAPTION, pl.text3).child(format!("{count} {} · {cpu:.0}% CPU · {} memory", if count == 1 { "process" } else { "processes" }, human_bytes(memory))))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.process_groups_expanded.remove(&toggle_key) {
                             this.process_groups_expanded.insert(toggle_key.clone());
@@ -187,9 +166,9 @@ impl MacScrap {
         scroll_body("procs")
             .gap(px(14.))
             .child(note("info", if cfg!(target_os = "linux") {
-                "Expand an app to see its processes. Memory is the sum of process resident memory and can count shared pages more than once. System and unrecognized programs are protected."
+                "Showing a snapshot. Use Refresh to update it. Memory totals can count shared pages more than once; system and unrecognized programs are protected."
             } else {
-                "Expand an app to see its processes. Only verified third-party app processes can be quit; quitting can lose unsaved work."
+                "Showing a snapshot. Use Refresh to update it. Only verified third-party app processes can be quit; quitting can lose unsaved work."
             }))
             .children(sections)
             .into_any_element()
@@ -326,20 +305,6 @@ impl MacScrap {
     }
 }
 
-
-fn process_group_key(proc_: &macscrap_core::background::ProcessInfo) -> String {
-    if let Some(name) = proc_.app_name.as_ref().map(|n| n.trim()).filter(|n| !n.is_empty()) {
-        return format!("name:{}", name.to_ascii_lowercase());
-    }
-    if let Some(exe) = proc_.executable.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
-        return format!("exe:{}", exe.to_ascii_lowercase());
-    }
-    let pname = proc_.name.trim();
-    if !pname.is_empty() {
-        return format!("proc:{}", pname.to_ascii_lowercase());
-    }
-    "other-processes".into()
-}
 
 pub fn note(icon_name: &str, message: &str) -> Div {
     let pl = p();

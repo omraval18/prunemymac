@@ -8,10 +8,17 @@ if [ "$#" -eq 1 ] && [ "$1" = "--universal" ]; then
     x86_64) OTHER_TARGET=aarch64-apple-darwin ;;
     *) echo "Unsupported host architecture" >&2; exit 1 ;;
   esac
+  if ! rustup target list --installed 2>/dev/null | grep -qx "$OTHER_TARGET"; then
+    command -v rustup >/dev/null || { echo "Install the $OTHER_TARGET Rust target first" >&2; exit 1; }
+    rustup target add "$OTHER_TARGET"
+  fi
   cargo build --release --locked -p prunemymac
+  cargo build --release --locked -p macscrap-core --bin prunemymac-protect
   cargo build --release --locked -p prunemymac --target "$OTHER_TARGET"
+  cargo build --release --locked -p macscrap-core --bin prunemymac-protect --target "$OTHER_TARGET"
 elif [ "$#" -eq 0 ]; then
   cargo build --release --locked -p prunemymac
+  cargo build --release --locked -p macscrap-core --bin prunemymac-protect
 else
   echo "Usage: scripts/bundle.sh [--universal]" >&2
   exit 1
@@ -23,19 +30,22 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp crates/macscrap/assets/fonts/*-OFL.txt "$APP/Contents/Resources/"
 if [ "${1:-}" = "--universal" ]; then
   lipo -create target/release/prunemymac "target/$OTHER_TARGET/release/prunemymac" -output "$APP/Contents/MacOS/prunemymac"
+  lipo -create target/release/prunemymac-protect "target/$OTHER_TARGET/release/prunemymac-protect" -output "$APP/Contents/MacOS/prunemymac-protect"
 else
   cp target/release/prunemymac "$APP/Contents/MacOS/prunemymac"
+  cp target/release/prunemymac-protect "$APP/Contents/MacOS/prunemymac-protect"
 fi
-ICONSET=$(mktemp -d)/prunemymac.iconset
+ICONDIR=$(mktemp -d "${TMPDIR:-/tmp}/prunemymac-icon.XXXXXX")
+trap 'rm -rf "$ICONDIR"' EXIT HUP INT TERM
+ICONSET="$ICONDIR/prunemymac.iconset"
 mkdir -p "$ICONSET"
-LOGO="$(dirname "$0")/../crates/macscrap/assets/images/chip-cleaner.png"
+LOGO=crates/macscrap/assets/images/chip-cleaner.png
 for SIZE in 16 32 128 256 512; do
   sips -z "$SIZE" "$SIZE" "$LOGO" --out "$ICONSET/icon_${SIZE}x${SIZE}.png" >/dev/null
   DOUBLE=$((SIZE * 2))
   sips -z "$DOUBLE" "$DOUBLE" "$LOGO" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/prunemymac.icns"
-rm -rf "$(dirname "$ICONSET")"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -54,5 +64,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 # Ad-hoc sign so macOS can remember Full Disk Access for this bundle.
+codesign --force --sign - "$APP/Contents/MacOS/prunemymac-protect"
 codesign --force --sign - "$APP"
 echo "Built $APP"

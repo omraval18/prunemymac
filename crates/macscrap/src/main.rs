@@ -1,5 +1,6 @@
 mod app;
 mod pages;
+mod performance_cache;
 mod sheet;
 mod theme;
 
