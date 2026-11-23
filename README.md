@@ -2,6 +2,16 @@
 
 A desktop cleaner and health monitor for macOS and Linux written in Rust with [GPUI](https://gpui.rs) (Zed's GPU-accelerated UI framework). Single 18 MB binary, ~75 MB RAM, ~2% CPU idle.
 
+## Install on macOS
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/omraval18/prunemymac/main/scripts/install-mac.sh | sh
+```
+
+This downloads the latest universal release, verifies its checksum, and installs `prunemymac.app` in `/Applications`. It runs on Apple Silicon and Intel Macs with macOS 12 or later. You can also download the DMG from [Releases](https://github.com/omraval18/prunemymac/releases). The DMG is not notarized, so if you install it by hand, right-click the app and choose Open the first time.
+
+## Build
+
 ```sh
 cargo run --release -p prunemymac        # run
 scripts/bundle.sh                      # build target/prunemymac.app

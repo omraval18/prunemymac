@@ -8,7 +8,8 @@ use gpui::{
     Window, WindowAppearance,
 };
 use macscrap_core::apps::{AppInfo, Leftover};
-use macscrap_core::background::{LaunchItem, ProcessInfo};
+use macscrap_core::background::LaunchItem;
+use crate::performance_cache::ProcessSnapshot;
 use macscrap_core::clean::{CleanReport, Method};
 use macscrap_core::files::{DuplicateSet, FileEntry};
 use macscrap_core::health::{Level, Monitor, Snapshot};
@@ -261,7 +262,7 @@ pub struct MacScrap {
     pub leftovers_selected: HashSet<PathBuf>,
 
     pub perf_tab: usize,
-    pub processes: Job<Vec<ProcessInfo>>,
+    pub processes: Job<ProcessSnapshot>,
     pub process_groups_expanded: HashSet<String>,
     pub launch: Job<Vec<LaunchItem>>,
     pub maintenance_running: Option<&'static str>,
@@ -627,7 +628,7 @@ impl MacScrap {
     }
 
     pub fn load_performance(&mut self, cx: &mut Context<Self>) {
-        self.spawn_job(cx, |s| &mut s.processes, |_, _| macscrap_core::background::heavy_processes(usize::MAX), |_| {});
+        self.spawn_job(cx, |s| &mut s.processes, |_, _| ProcessSnapshot::new(macscrap_core::background::heavy_processes(usize::MAX)), |_| {});
         self.spawn_job(cx, |s| &mut s.launch, |_, _| macscrap_core::background::launch_items(), |_| {});
     }
 
@@ -723,7 +724,7 @@ impl MacScrap {
                 window.focus(&self.search_focus);
             }
             Page::Performance => {
-                if !self.processes.is_running() {
+                if matches!(self.processes, Job::Idle) || matches!(self.launch, Job::Idle) {
                     self.load_performance(cx);
                 }
                 window.focus(&self.focus);

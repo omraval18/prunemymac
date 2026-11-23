@@ -7,6 +7,7 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [ -n "$VERSION" ] || { echo "Could not determine the workspace version" >&2; exit 1; }
 scripts/bundle.sh --universal
 lipo target/prunemymac.app/Contents/MacOS/prunemymac -verify_arch arm64 x86_64
+lipo target/prunemymac.app/Contents/MacOS/prunemymac-protect -verify_arch arm64 x86_64
 codesign --verify --deep --strict target/prunemymac.app
 
 STAGING=$(mktemp -d "${TMPDIR:-/tmp}/prunemymac-release.XXXXXX")

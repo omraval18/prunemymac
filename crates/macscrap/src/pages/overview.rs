@@ -169,7 +169,7 @@ impl MacScrap {
         let pl = p();
         let heavy = self.processes.done().map(|processes| {
             let mut apps = std::collections::HashMap::new();
-            for process in processes {
+            for process in &processes.processes {
                 if let Some(app) = &process.app_bundle { *apps.entry(app).or_insert(0.0f32) += process.cpu; }
             }
             apps.values().filter(|&&cpu| cpu >= 30.0).count()
